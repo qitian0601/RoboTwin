@@ -1,0 +1,10 @@
+# NERO robot assets are stored with Git LFS. Keeping this rule in the tracked
+# root attributes file makes fresh clones fetch real files instead of leaving
+# raw LFS pointer text in the working tree.
+assets/embodiments/nero/*.yml filter=lfs diff=lfs merge=lfs -text
+assets/embodiments/nero/**/*.yml filter=lfs diff=lfs merge=lfs -text
+assets/embodiments/nero/*.urdf filter=lfs diff=lfs merge=lfs -text
+assets/embodiments/nero/**/*.urdf filter=lfs diff=lfs merge=lfs -text
+assets/embodiments/nero/*.stl filter=lfs diff=lfs merge=lfs -text
+assets/embodiments/nero/**/*.stl filter=lfs diff=lfs merge=lfs -text
+assets/embodiments/nero/**/*.dae filter=lfs diff=lfs merge=lfs -text
