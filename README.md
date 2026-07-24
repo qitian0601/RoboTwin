@@ -62,6 +62,13 @@ Accepted to <i style="color: red; display: inline;"><b>ECCV Workshop 2024 (Best 
 
 See [RoboTwin 2.0 Document (Usage - Install & Download)](https://robotwin-platform.github.io/doc/usage/robotwin-install.html) for installation instructions. It takes about 20 minutes for installation.
 
+## NERO / PI0.5 工作流
+
+本 fork 额外包含 NERO 的 URDF/mesh、CuRobo 配置、三个任务的数据生成脚本、PI0.5
+远程推理和视角 adapter 工具。请先阅读 [NERO PI0.5 指南](docs/nero_pi05.md)。
+模型 checkpoint、adapter 权重、数据集和 `outputs/` 不在 Git 仓库中，需要在目标机器
+上重新生成或从外部模型存储下载。
+
 # 🤷‍♂️ Tasks Informations
 See [RoboTwin 2.0 Tasks Doc](https://robotwin-platform.github.io/doc/tasks/index.html) for more details.
 

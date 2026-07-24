@@ -1,0 +1,62 @@
+policy_name: lerobot_pi05_ee_base
+task_name: place_two_cubes_box
+task_config: demo_nero_two_cubes
+ckpt_setting: lerobot_pi05_ee_base
+seed: 0
+instruction_type: seen
+test_num: 1
+
+# Evaluation recording only. Policy camera inputs keep their native resolution.
+eval_video_stride: 3
+eval_video_output_width: 640
+eval_video_output_height: 400
+eval_video_crf: 28
+eval_video_preset: ultrafast
+
+policy_path: /path/to/14d-nero-base-ee-pi05-checkpoint/pretrained_model
+server_address: 127.0.0.1:8081
+policy_device: cuda
+actions_per_chunk: 50
+chunk_size_threshold: 0.8
+aggregate_fn_name: average
+action_merge_new_weight: 0.75
+fps: 30
+
+# The checkpoint uses [right xyz rotvec gripper, left xyz rotvec gripper].
+gripper_max_width: 0.1
+pose_reference_frame: robotwin_world_control
+# The training action is an expert command target and may lead actual feedback
+# by more than 4 cm. Independent EE clipping desynchronizes arm and gripper.
+# Non-positive values disable the extra EE-space limiter.
+max_ee_position_step_m: 0.0
+max_ee_rotation_step_rad: 0.0
+
+# Add clearance only while a closed gripper is carrying above the grasp zone.
+# The factors ramp continuously in height and gripper width, so grasp/release
+# targets are not shifted by an abrupt 2.5 cm step. Set the offset to 0 to disable.
+carry_lift_offset_m: 0.0
+carry_lift_start_z_m: 0.89
+carry_lift_full_z_m: 0.94
+carry_lift_closed_width_m: 0.02
+carry_lift_open_width_m: 0.08
+
+# This simulation checkpoint stores RoboTwin world-frame control poses; convert
+# them to each arm's gripper_tcp base-frame target before cuRobo IK.
+curobo_config: assets/embodiments/nero/curobo.yml
+curobo_ee_link: gripper_tcp
+curobo_num_seeds: 64
+curobo_return_seeds: 8
+# Model predictions near the workspace boundary can miss the requested TCP
+# position slightly. Allow up to 2 cm so one marginal IK result does not abort
+# the full rollout; cuRobo still rejects infeasible joint solutions.
+curobo_position_threshold: 0.02
+curobo_rotation_threshold: 0.03
+
+exact_policy_tracking: true
+max_policy_step_rad: 0.05
+max_gripper_step_m: 0.05
+max_executor_step_rad: 0.005
+max_executor_gripper_step_m: 0.004
+
+trace_enabled: true
+trace_dir: outputs/pi05_ee_base_inference_traces

@@ -81,7 +81,19 @@ def pkl_files_to_hdf5_and_video(pkl_files, hdf5_path, video_path):
         pkl_file = load_pkl_file(pkl_file_path)
         append_data_to_structure(data_list, pkl_file)
 
-    images_to_video(np.array(data_list["observation"]["head_camera"]["rgb"]), out_path=video_path)
+    observations = data_list.get("observation", {})
+    if "head_camera" in observations:
+        images_to_video(np.array(observations["head_camera"]["rgb"]), out_path=video_path)
+
+    video_root, video_ext = os.path.splitext(video_path)
+    for camera_name in ("left_camera", "right_camera"):
+        if camera_name not in observations:
+            continue
+        camera_data = observations[camera_name]
+        if "rgb" not in camera_data:
+            continue
+        wrist_video_path = f"{video_root}_{camera_name}{video_ext}"
+        images_to_video(np.array(camera_data["rgb"]), out_path=wrist_video_path)
 
     with h5py.File(hdf5_path, "w") as f:
         create_hdf5_from_dict(f, data_list)

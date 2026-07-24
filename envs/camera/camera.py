@@ -57,6 +57,30 @@ class Camera:
 
         self.collect_head_camera = kwags["camera"].get("collect_head_camera", True)
         self.collect_wrist_camera = kwags["camera"].get("collect_wrist_camera", True)
+        self.manual_wrist_camera = kwags["camera"].get("manual_wrist_camera", False)
+        self.manual_wrist_camera_offset = np.array(
+            kwags["camera"].get("manual_wrist_camera_offset", [-0.08, 0.0, 0.04]),
+            dtype=float,
+        )
+        self.manual_wrist_camera_use_tcp_rotation = kwags["camera"].get("manual_wrist_camera_use_tcp_rotation", True)
+        self.manual_wrist_camera_forward = np.array(
+            kwags["camera"].get("manual_wrist_camera_forward", [1.0, 0.0, -0.25]),
+            dtype=float,
+        )
+        self.manual_wrist_camera_left = np.array(
+            kwags["camera"].get("manual_wrist_camera_left", [0.0, 1.0, 0.0]),
+            dtype=float,
+        )
+        self.manual_wrist_camera_look_at_offset = np.array(
+            kwags["camera"].get("manual_wrist_camera_look_at_offset", [0.0, 0.0, 0.0]),
+            dtype=float,
+        )
+        self.manual_wrist_camera_up = np.array(
+            kwags["camera"].get("manual_wrist_camera_up", [0.0, 0.0, 1.0]),
+            dtype=float,
+        )
+        self.rgb_distortion = kwags["camera"].get("rgb_distortion", {})
+        self.rgb_distortion_maps = {}
 
         # embodiment = kwags.get('embodiment')
         # embodiment_config_path = os.path.join(CONFIGS_PATH, '_embodiment_config.yml')
@@ -70,7 +94,10 @@ class Camera:
         # with open(robot_config_file, 'r', encoding='utf-8') as f:
         #     embodiment_args = yaml.load(f.read(), Loader=yaml.FullLoader)
         # TODO
-        self.static_camera_info_list = kwags["left_embodiment_config"]["static_camera_list"]
+        self.static_camera_info_list = kwags["camera"].get(
+            "static_camera_list",
+            kwags["left_embodiment_config"]["static_camera_list"],
+        )
         self.static_camera_num = len(self.static_camera_info_list)
 
     def load_camera(self, scene):
@@ -95,9 +122,10 @@ class Camera:
 
             camera_config = camera_args[camera_info["type"]]
             cam_pos = np.array(camera_info["position"])
-            vector = np.random.randn(3)
-            random_dir = vector / np.linalg.norm(vector)
-            cam_pos = cam_pos + random_dir * np.random.uniform(low=0, high=random_head_camera_dis)
+            if not camera_info.get("preserve_task_rng", False):
+                vector = np.random.randn(3)
+                random_dir = vector / np.linalg.norm(vector)
+                cam_pos = cam_pos + random_dir * np.random.uniform(low=0, high=random_head_camera_dis)
             cam_forward = np.array(camera_info["forward"]) / np.linalg.norm(np.array(camera_info["forward"]))
             cam_left = np.array(camera_info["left"]) / np.linalg.norm(np.array(camera_info["left"]))
             up = np.cross(cam_forward, cam_left)
@@ -283,12 +311,45 @@ class Camera:
         # self.head_sensor.take_picture()
         # self.head_sensor.compute_depth()
 
-    def update_wrist_camera(self, left_pose, right_pose):
+    @staticmethod
+    def _normalize(vec):
+        norm = np.linalg.norm(vec)
+        if norm < 1e-8:
+            return vec
+        return vec / norm
+
+    def _manual_wrist_pose_from_tcp(self, tcp_pose):
+        tcp_pos = np.array(tcp_pose[:3], dtype=float)
+        tcp_rot = t3d.quaternions.quat2mat(np.array(tcp_pose[3:7], dtype=float))
+
+        if self.manual_wrist_camera_use_tcp_rotation:
+            cam_pos = tcp_pos + tcp_rot @ self.manual_wrist_camera_offset
+            cam_forward = self._normalize(tcp_rot @ self.manual_wrist_camera_forward)
+            cam_left = self._normalize(tcp_rot @ self.manual_wrist_camera_left)
+            cam_up = self._normalize(np.cross(cam_forward, cam_left))
+            cam_left = self._normalize(np.cross(cam_up, cam_forward))
+        else:
+            cam_pos = tcp_pos + self.manual_wrist_camera_offset
+            look_at = tcp_pos + self.manual_wrist_camera_look_at_offset
+            cam_forward = self._normalize(look_at - cam_pos)
+            up_hint = self._normalize(self.manual_wrist_camera_up)
+            cam_left = self._normalize(np.cross(up_hint, cam_forward))
+            cam_up = self._normalize(np.cross(cam_forward, cam_left))
+
+        mat44 = np.eye(4)
+        mat44[:3, :3] = np.stack([cam_forward, cam_left, cam_up], axis=1)
+        mat44[:3, 3] = cam_pos
+        return sapien.Pose(mat44)
+
+    def update_wrist_camera(self, left_pose, right_pose, left_tcp_pose=None, right_tcp_pose=None):
         """
         Update rendering to refresh the camera's RGBD information
         (rendering must be updated even when disabled, otherwise data cannot be collected).
         """
         if self.collect_wrist_camera:
+            if self.manual_wrist_camera and left_tcp_pose is not None and right_tcp_pose is not None:
+                left_pose = self._manual_wrist_pose_from_tcp(left_tcp_pose)
+                right_pose = self._manual_wrist_pose_from_tcp(right_tcp_pose)
             self.left_camera.entity.set_pose(left_pose)
             self.right_camera.entity.set_pose(right_pose)
 
@@ -325,8 +386,80 @@ class Camera:
         rgb = {}
         for camera_name, camera_data in rgba.items():
             rgb[camera_name] = {}
-            rgb[camera_name]["rgb"] = camera_data["rgba"][:, :, :3]  # Exclude alpha channel
+            image = camera_data["rgba"][:, :, :3]  # Exclude alpha channel
+            image = self._apply_rgb_distortion(camera_name, image)
+            rgb[camera_name]["rgb"] = self._apply_rgb_stretch(camera_name, image)
         return rgb
+
+    def _apply_rgb_stretch(self, camera_name, image):
+        cfg = self.rgb_distortion.get(camera_name, {})
+        vertical_stretch = float(cfg.get("vertical_stretch", 1.0))
+        horizontal_stretch = float(cfg.get("horizontal_stretch", 1.0))
+        if vertical_stretch == 1.0 and horizontal_stretch == 1.0:
+            return image
+
+        h, w = image.shape[:2]
+        new_h = max(1, int(round(h * vertical_stretch)))
+        new_w = max(1, int(round(w * horizontal_stretch)))
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+        if new_h >= h:
+            top = (new_h - h) // 2
+            resized = resized[top:top + h, :]
+        else:
+            pad_top = (h - new_h) // 2
+            pad_bottom = h - new_h - pad_top
+            resized = cv2.copyMakeBorder(resized, pad_top, pad_bottom, 0, 0, cv2.BORDER_REPLICATE)
+
+        if new_w >= w:
+            left = (new_w - w) // 2
+            resized = resized[:, left:left + w]
+        else:
+            pad_left = (w - new_w) // 2
+            pad_right = w - new_w - pad_left
+            resized = cv2.copyMakeBorder(resized, 0, 0, pad_left, pad_right, cv2.BORDER_REPLICATE)
+
+        return resized
+
+    def _apply_rgb_distortion(self, camera_name, image):
+        cfg = self.rgb_distortion.get(camera_name)
+        if not cfg or not cfg.get("enabled", False):
+            return image
+
+        h, w = image.shape[:2]
+        coeffs = cfg.get("coeffs")
+        if coeffs is not None:
+            coeffs = [float(v) for v in coeffs]
+            coeffs = (coeffs + [0.0] * 5)[:5]
+        else:
+            coeffs = [
+                float(cfg.get("k1", 0.0)),
+                float(cfg.get("k2", 0.0)),
+                float(cfg.get("p1", 0.0)),
+                float(cfg.get("p2", 0.0)),
+                float(cfg.get("k3", 0.0)),
+            ]
+        fx = float(cfg.get("fx", w / 2.0))
+        fy = float(cfg.get("fy", h / 2.0))
+        cx = float(cfg.get("ppx", (w - 1) / 2.0))
+        cy = float(cfg.get("ppy", (h - 1) / 2.0))
+
+        key = (camera_name, h, w, fx, fy, cx, cy, *coeffs)
+        if key not in self.rgb_distortion_maps:
+            k1, k2, p1, p2, k3 = coeffs
+            yy, xx = np.indices((h, w), dtype=np.float32)
+            x = (xx - cx) / fx
+            y = (yy - cy) / fy
+            r2 = x * x + y * y
+            radial = 1.0 + k1 * r2 + k2 * r2 * r2 + k3 * r2 * r2 * r2
+            x_distorted = x * radial + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x)
+            y_distorted = y * radial + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y
+            map_x = (x_distorted * fx + cx).astype(np.float32)
+            map_y = (y_distorted * fy + cy).astype(np.float32)
+            self.rgb_distortion_maps[key] = (map_x, map_y)
+
+        map_x, map_y = self.rgb_distortion_maps[key]
+        return cv2.remap(image, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
     
     # Get Camera RGBA
     def get_rgba(self) -> dict:

@@ -503,6 +503,7 @@ def create_actor(
         pose: sapien.Pose,
         modelname: str,
         scale=(1, 1, 1),
+        scale_multiplier=None,
         convex=False,
         is_static=False,
         model_id=0,
@@ -535,6 +536,10 @@ def create_actor(
         with open(json_file_path, "r") as file:
             model_data = json.load(file)
         scale = model_data["scale"]
+        if scale_multiplier is not None:
+            scale = (np.asarray(scale, dtype=float) * np.asarray(scale_multiplier, dtype=float)).tolist()
+            model_data = dict(model_data)
+            model_data["scale"] = scale
     except:
         model_data = None
 

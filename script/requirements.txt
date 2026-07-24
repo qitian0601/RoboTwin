@@ -24,3 +24,5 @@ termcolor
 av
 matplotlib
 ffmpeg
+grpcio
+protobuf

@@ -13,10 +13,57 @@ import json
 import traceback
 import os
 import time
+import threading
 from argparse import ArgumentParser
 
 current_file_path = os.path.abspath(__file__)
 parent_directory = os.path.dirname(current_file_path)
+
+
+class StderrFilter:
+    def __init__(self, blocked_patterns):
+        self.blocked_patterns = blocked_patterns
+        self._saved_fd = None
+        self._read_fd = None
+        self._thread = None
+
+    def __enter__(self):
+        sys.stderr.flush()
+        self._saved_fd = os.dup(2)
+        self._read_fd, write_fd = os.pipe()
+        os.dup2(write_fd, 2)
+        os.close(write_fd)
+        self._thread = threading.Thread(target=self._forward_stderr, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        sys.stderr.flush()
+        os.dup2(self._saved_fd, 2)
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+        os.close(self._saved_fd)
+        self._saved_fd = None
+
+    def _forward_stderr(self):
+        pending = b""
+        while True:
+            chunk = os.read(self._read_fd, 4096)
+            if not chunk:
+                break
+            pending += chunk
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                self._write_if_allowed(line + b"\n")
+        if pending:
+            self._write_if_allowed(pending)
+        os.close(self._read_fd)
+
+    def _write_if_allowed(self, data):
+        text = data.decode("utf-8", errors="replace")
+        if any(pattern in text for pattern in self.blocked_patterns):
+            return
+        os.write(self._saved_fd, data)
 
 
 def class_decorator(task_name):
@@ -34,6 +81,17 @@ def get_embodiment_config(robot_file):
     with open(robot_config_file, "r", encoding="utf-8") as f:
         embodiment_args = yaml.load(f.read(), Loader=yaml.FullLoader)
     return embodiment_args
+
+
+def apply_embodiment_overrides(args):
+    overrides = args.get("embodiment_overrides", {})
+    for side, config_key in (
+        ("left", "left_embodiment_config"),
+        ("right", "right_embodiment_config"),
+    ):
+        side_overrides = overrides.get(side, {})
+        if side_overrides:
+            args[config_key].update(side_overrides)
 
 
 def main(task_name=None, task_config=None):
@@ -72,6 +130,7 @@ def main(task_name=None, task_config=None):
 
     args["left_embodiment_config"] = get_embodiment_config(args["left_robot_file"])
     args["right_embodiment_config"] = get_embodiment_config(args["right_robot_file"])
+    apply_embodiment_overrides(args)
 
     if len(embodiment_type) == 1:
         embodiment_name = str(embodiment_type[0])
@@ -99,17 +158,51 @@ def main(task_name=None, task_config=None):
 
     args["embodiment_name"] = embodiment_name
     args['task_config'] = task_config
-    args["save_path"] = os.path.join(args["save_path"], str(args["task_name"]), args["task_config"])
+    collection_output_root = os.environ.get("ROBOTWIN_COLLECTION_OUTPUT_ROOT")
+    if collection_output_root:
+        args["save_path"] = os.path.abspath(os.path.expanduser(collection_output_root))
+        print(f"Collection output override: {args['save_path']}")
+    else:
+        args["save_path"] = os.path.join(
+            args["save_path"], str(args["task_name"]), args["task_config"]
+        )
+    collection_seed_start = os.environ.get("ROBOTWIN_COLLECTION_SEED_START")
+    if collection_seed_start:
+        args["seed_start"] = int(collection_seed_start)
+        print(f"Collection seed start override: {args['seed_start']}")
     run(task, args)
 
 
 def run(TASK_ENV, args):
-    epid, suc_num, fail_num, seed_list = 0, 0, 0, []
+    epid, suc_num, fail_num, seed_list = int(args.get("seed_start", 0)), 0, 0, []
 
     print(f"Task Name: \033[34m{args['task_name']}\033[0m")
 
     # =========== Collect Seed ===========
     os.makedirs(args["save_path"], exist_ok=True)
+
+    def count_existing_seeds():
+        seed_path = os.path.join(args["save_path"], "seed.txt")
+        if not os.path.exists(seed_path):
+            return 0
+        with open(seed_path, "r") as file:
+            return len(file.read().split())
+
+    def count_existing_hdf5():
+        idx = 0
+        while os.path.exists(os.path.join(args["save_path"], "data", f"episode{idx}.hdf5")):
+            idx += 1
+        return idx
+
+    if args.get("append_episode_on_run", False):
+        seed_count = count_existing_seeds()
+        hdf5_count = count_existing_hdf5()
+        target_episode_num = max(int(args["episode_num"]), seed_count)
+        if hdf5_count >= target_episode_num:
+            target_episode_num = hdf5_count + 1
+        if target_episode_num != args["episode_num"]:
+            print(f"Append mode: episode_num {args['episode_num']} -> {target_episode_num}")
+            args["episode_num"] = target_episode_num
 
     if not args["use_seed"]:
         print("\033[93m" + "[Start Seed and Pre Motion Data Collection]" + "\033[0m")
@@ -218,7 +311,15 @@ def run(TASK_ENV, args):
             with open(info_file_path, "r", encoding="utf-8") as file:
                 info_db = json.load(file)
 
-            info = TASK_ENV.play_once()
+            fixed_rate = args.get("fixed_rate_recording", {})
+            fixed_rate_enabled = fixed_rate.get("enabled", False)
+            if fixed_rate_enabled:
+                TASK_ENV.start_fixed_rate_recording(fixed_rate.get("sample_hz", 30))
+            try:
+                info = TASK_ENV.play_once()
+            finally:
+                if fixed_rate_enabled:
+                    TASK_ENV.stop_fixed_rate_recording()
             info_db[f"episode_{episode_idx}"] = info
 
             with open(info_file_path, "w", encoding="utf-8") as file:
@@ -229,8 +330,9 @@ def run(TASK_ENV, args):
             TASK_ENV.remove_data_cache()
             assert TASK_ENV.check_success(), "Collect Error"
 
-        command = f"cd description && bash gen_episode_instructions.sh {args['task_name']} {args['task_config']} {args['language_num']}"
-        os.system(command)
+        if args.get("generate_episode_instructions", True):
+            command = f"cd description && bash gen_episode_instructions.sh {args['task_name']} {args['task_config']} {args['language_num']}"
+            os.system(command)
 
 
 if __name__ == "__main__":
@@ -247,4 +349,5 @@ if __name__ == "__main__":
     task_name = parser.task_name
     task_config = parser.task_config
 
-    main(task_name=task_name, task_config=task_config)
+    with StderrFilter(["[svulkan2] [error] OIDN Error:"]):
+        main(task_name=task_name, task_config=task_config)

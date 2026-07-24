@@ -61,6 +61,17 @@ def get_embodiment_config(robot_file):
     return embodiment_args
 
 
+def apply_embodiment_overrides(args):
+    overrides = args.get("embodiment_overrides", {})
+    for side, config_key in (
+        ("left", "left_embodiment_config"),
+        ("right", "right_embodiment_config"),
+    ):
+        side_overrides = overrides.get(side, {})
+        if side_overrides:
+            args[config_key].update(side_overrides)
+
+
 def main(usr_args):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     task_name = usr_args["task_name"]
@@ -77,6 +88,18 @@ def main(usr_args):
 
     with open(f"./task_config/{task_config}.yml", "r", encoding="utf-8") as f:
         args = yaml.load(f.read(), Loader=yaml.FullLoader)
+
+    # Policy launchers may tune evaluation recording without changing the task's
+    # camera/render configuration used by collection and other workflows.
+    for key in (
+        "eval_video_stride",
+        "eval_video_output_width",
+        "eval_video_output_height",
+        "eval_video_crf",
+        "eval_video_preset",
+    ):
+        if key in usr_args:
+            args[key] = usr_args[key]
 
     args['task_name'] = task_name
     args["task_config"] = task_config
@@ -115,6 +138,7 @@ def main(usr_args):
 
     args["left_embodiment_config"] = get_embodiment_config(args["left_robot_file"])
     args["right_embodiment_config"] = get_embodiment_config(args["right_robot_file"])
+    apply_embodiment_overrides(args)
 
     if len(embodiment_type) == 1:
         embodiment_name = str(embodiment_type[0])
@@ -156,10 +180,10 @@ def main(usr_args):
     usr_args["right_arm_dim"] = len(args["right_embodiment_config"]["arm_joints_name"][1])
 
     seed = usr_args["seed"]
-
-    st_seed = 100000 * (1 + seed)
+    scenario_seed = usr_args.get("scenario_seed")
+    st_seed = int(scenario_seed) if scenario_seed is not None else 100000 * (1 + seed)
     suc_nums = []
-    test_num = 100
+    test_num = int(usr_args.get("test_num", 100))
     topk = 1
 
     model = get_model(usr_args)
@@ -260,32 +284,44 @@ def eval_policy(task_name,
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
         if TASK_ENV.eval_video_path is not None:
-            ffmpeg = subprocess.Popen(
+            eval_video_stride = max(1, int(args.get("eval_video_stride", 1)))
+            eval_video_fps = float(args.get("eval_video_fps", 30)) / eval_video_stride
+            output_width = int(args.get("eval_video_output_width", 0))
+            output_height = int(args.get("eval_video_output_height", 0))
+            ffmpeg_command = [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "rawvideo",
+                "-pixel_format",
+                "rgb24",
+                "-video_size",
+                video_size,
+                "-framerate",
+                str(eval_video_fps),
+                "-i",
+                "-",
+            ]
+            if output_width > 0 and output_height > 0:
+                ffmpeg_command.extend(
+                    ["-vf", f"scale={output_width}:{output_height}:flags=fast_bilinear"]
+                )
+            ffmpeg_command.extend(
                 [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel",
-                    "error",
-                    "-f",
-                    "rawvideo",
-                    "-pixel_format",
-                    "rgb24",
-                    "-video_size",
-                    video_size,
-                    "-framerate",
-                    "10",
-                    "-i",
-                    "-",
                     "-pix_fmt",
                     "yuv420p",
                     "-vcodec",
                     "libx264",
+                    "-preset",
+                    str(args.get("eval_video_preset", "medium")),
                     "-crf",
-                    "23",
+                    str(args.get("eval_video_crf", 23)),
                     f"{TASK_ENV.eval_video_path}/episode{TASK_ENV.test_num}.mp4",
-                ],
-                stdin=subprocess.PIPE,
+                ]
             )
+            ffmpeg = subprocess.Popen(ffmpeg_command, stdin=subprocess.PIPE)
             TASK_ENV._set_eval_video_ffmpeg(ffmpeg)
 
         succ = False

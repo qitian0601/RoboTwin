@@ -10,25 +10,29 @@ class beat_block_hammer(Base_Task):
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
+        table_x, table_y = self.table_xy_bias
         self.hammer = create_actor(
             scene=self,
-            pose=sapien.Pose([0, -0.06, 0.783], [0, 0, 0.995, 0.105]),
+            pose=sapien.Pose([table_x, table_y - 0.06, 0.783], [0, 0, 0.995, 0.105]),
             modelname="020_hammer",
             convex=True,
             model_id=0,
         )
         block_pose = rand_pose(
-            xlim=[-0.25, 0.25],
-            ylim=[-0.05, 0.15],
+            xlim=[table_x - 0.25, table_x + 0.25],
+            ylim=[table_y - 0.05, table_y + 0.15],
             zlim=[0.76],
             qpos=[1, 0, 0, 0],
             rotate_rand=True,
             rotate_lim=[0, 0, 0.5],
         )
-        while abs(block_pose.p[0]) < 0.05 or np.sum(pow(block_pose.p[:2], 2)) < 0.001:
+        while (
+            abs(block_pose.p[0] - table_x) < 0.05
+            or np.sum(np.square(block_pose.p[:2] - np.array([table_x, table_y]))) < 0.001
+        ):
             block_pose = rand_pose(
-                xlim=[-0.25, 0.25],
-                ylim=[-0.05, 0.15],
+                xlim=[table_x - 0.25, table_x + 0.25],
+                ylim=[table_y - 0.05, table_y + 0.15],
                 zlim=[0.76],
                 qpos=[1, 0, 0, 0],
                 rotate_rand=True,
@@ -57,10 +61,10 @@ class beat_block_hammer(Base_Task):
         # Get the position of the block's functional point
         block_pose = self.block.get_functional_point(0, "pose").p
         # Determine which arm to use based on block position (left if block is on left side, else right)
-        arm_tag = ArmTag("left" if block_pose[0] < 0 else "right")
+        arm_tag = ArmTag("left" if block_pose[0] < self.table_xy_bias[0] else "right")
 
         # Grasp the hammer with the selected arm
-        self.move(self.grasp_actor(self.hammer, arm_tag=arm_tag, pre_grasp_dis=0.12, grasp_dis=0.01))
+        self.move(self.grasp_actor(self.hammer, arm_tag=arm_tag, pre_grasp_dis=0.12, grasp_dis=0.0))
         # Move the hammer upwards
         self.move(self.move_by_displacement(arm_tag, z=0.07, move_axis="arm"))
 

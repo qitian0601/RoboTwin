@@ -2,13 +2,24 @@ models/
 data/*
 !data/process_stuck.py
 __pycache__/
+*.py[cod]
+.pytest_cache/
 **/checkpoints/
 result/
 envs/curobo
 *.zip
 viewer_show.*
 eval_video/
+# Task configurations are normally generated locally. Keep the configurations
+# required by the checked-in NERO workflows so a fresh clone is runnable.
 task_config/
+!task_config/
+task_config/*
+!task_config/demo_nero_beat_block_hammer_c0.yml
+!task_config/demo_nero_click_bell_c0.yml
+!task_config/demo_nero_pick_dual_bottles_c0.yml
+!task_config/demo_nero_two_cubes.yml
+!task_config/demo_nero_two_cubes_ee80.yml
 **/.DS_Store
 
 # eval result
@@ -18,6 +29,11 @@ eval_result/
 assets/*
 !assets/_download.py
 !assets/files
+!assets/embodiments/
+assets/embodiments/*
+!assets/embodiments/nero/
+!assets/embodiments/nero/**
+assets/embodiments/nero/nero_custom.yml
 
 policy/weights/*
 
@@ -28,3 +44,10 @@ envs/curobo/*
 
 /*.json*
 /*.txt
+
+# Generated datasets, checkpoints, rollout videos and experiment logs are
+# reproducible artifacts and must stay outside the source repository.
+outputs/
+logs/
+eval_video/
+eval_result/

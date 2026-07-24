@@ -1,0 +1,24 @@
+policy_name: lerobot_pi05
+task_name: place_two_cubes_box
+task_config: demo_nero_two_cubes
+ckpt_setting: lerobot_pi05
+seed: 0
+instruction_type: seen
+test_num: 1
+
+policy_path: /path/to/16d-nero-pi05-checkpoint/pretrained_model
+server_address: 127.0.0.1:8081
+policy_device: cuda
+actions_per_chunk: 50
+chunk_size_threshold: 0.8
+aggregate_fn_name: average
+fps: 30
+gripper_max_width: 0.1
+direct_sim_control: true
+exact_policy_tracking: true
+max_policy_step_rad: 0.05
+max_gripper_step_m: 0.05
+max_executor_step_rad: 0.005
+max_executor_gripper_step_m: 0.004
+trace_enabled: false
+trace_dir: outputs/pi05_inference_traces

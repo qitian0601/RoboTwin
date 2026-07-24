@@ -1,0 +1,97 @@
+# Nero C0 smoke/collection config for pick_dual_bottles.
+# Robot, table, home poses, and all three cameras match demo_nero_two_cubes.yml.
+render_freq: 0
+episode_num: 1
+append_episode_on_run: true
+use_seed: false
+save_freq: 15
+render_quality:
+  camera_shader_dir: rt
+  viewer_shader_dir: rt
+  ray_tracing_samples_per_pixel: 64
+  ray_tracing_path_depth: 6
+  ray_tracing_denoiser: optix
+embodiment: [nero, nero, 0.7]
+embodiment_overrides:
+  left:
+    homestate:
+      - [-0.07127924665144843, -1.3606935914398193, 0.02806489437206882, 1.8816045599900468, 0.04045673206122856, 0.0009424777960769379, 1.5707265136248167]
+      - [-0.07127924665144843, -1.3606935914398193, 0.02806489437206882, 1.8816045599900468, 0.04045673206122856, 0.0009424777960769379, 1.5707265136248167]
+    robot_pose:
+      - [0.0, -0.65, 0.74, 0.707107, 0.0, 0.0, -0.707107]
+      - [0.0, -0.65, 0.74, 0.707107, 0.0, 0.0, -0.707107]
+  right:
+    homestate:
+      - [-0.07127924665144843, -1.3606935914398193, 0.02806489437206882, 1.8816045599900468, 0.04045673206122856, 0.0009424777960769379, 1.5707265136248167]
+      - [-0.07127924665144843, -1.3606935914398193, 0.02806489437206882, 1.8816045599900468, 0.04045673206122856, 0.0009424777960769379, 1.5707265136248167]
+    robot_pose:
+      - [0.0, -0.65, 0.74, 0.707, 0.0, 0.0, 0.707]
+      - [0.0, -0.65, 0.74, 0.707107, 0.0, 0.0, -0.707107]
+table_length: 1.4
+table_width: 0.7
+table_xy_bias: [0.0, -0.30]
+table_texture_id: real_table_wood
+# Nero needs a deeper cylindrical grasp than the cube; -5 cm is the shallowest
+# tested value that lifts both bottles instead of pushing them away.
+dual_bottle_grasp_dis: -0.05
+# The stock base16 bottle is 9.2 cm wide, beyond the reliable Nero grasp span.
+# Use the 6.0 cm bottle geometry for both randomized left/right instances.
+dual_bottle_model_ids: [22, 22]
+# Scale the 6 cm stock bottle to the Nero-tested 4.8 cm grasp span.
+dual_bottle_scale: 0.8
+# Use the same top-down grasp orientations already validated by the cube task.
+dual_bottle_use_nero_contacts: true
+language_num: 1
+domain_randomization:
+  random_background: false
+  cluttered_table: false
+  clean_background_rate: 1
+  random_head_camera_dis: 0
+  random_table_height: 0
+  random_light: false
+  crazy_random_light_rate: 0
+camera:
+  head_camera_type: Large_D455
+  wrist_camera_type: D455
+  collect_head_camera: true
+  collect_wrist_camera: true
+  static_camera_list:
+    - name: head_camera
+      type: Large_D455
+      position: [0.0, -0.98, 1.52]
+      forward: [0.0, 0.72, -0.74]
+      left: [-1.0, 0.0, 0.0]
+  manual_wrist_camera: true
+  manual_wrist_camera_use_tcp_rotation: true
+  manual_wrist_camera_offset: [-0.16, 0.0, 0.12]
+  manual_wrist_camera_look_at_offset: [0.0, 0.0, 0.0]
+  manual_wrist_camera_up: [0.0, 0.0, 1.0]
+  manual_wrist_camera_forward: [1.0, 0.0, -0.35]
+  manual_wrist_camera_left: [0.0, 1.0, 0.0]
+  rgb_distortion:
+    head_camera:
+      enabled: true
+      model: inverse_brown_conrady
+      fx: 644.3301
+      fy: 643.4210
+      ppx: 642.9900
+      ppy: 398.6344
+      coeffs: [-0.0562166, 0.0662132, -0.0007664, 0.0004938, -0.0220463]
+      vertical_stretch: 1.2
+data_type:
+  rgb: true
+  third_view: false
+  depth: false
+  pointcloud: false
+  observer: false
+  endpose: true
+  qpos: true
+  mesh_segmentation: false
+  actor_segmentation: false
+pcd_down_sample_num: 1024
+pcd_crop: true
+save_path: ./data
+clear_cache_freq: 1
+collect_data: true
+eval_video_log: true
+eval_video_fps: 30

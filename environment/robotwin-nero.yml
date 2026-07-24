@@ -1,0 +1,12 @@
+name: RoboTwin5090
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - ffmpeg
+  - pip:
+      - warp-lang==1.12.0
+      - setuptools==69.5.1

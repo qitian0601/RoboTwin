@@ -138,7 +138,13 @@ def load_task_instructions(task_name: str) -> Dict[str, Any]:
 
 def load_scene_info(task_name: str, setting: str, scene_info_path: str) -> Dict[str, Dict]:
     """Load the scene info from the JSON file in the data directory."""
-    file_path = os.path.join(parent_directory, f"../../{scene_info_path}/{task_name}/{setting}/scene_info.json")
+    collection_output_root = os.environ.get("ROBOTWIN_COLLECTION_OUTPUT_ROOT")
+    if collection_output_root:
+        file_path = os.path.join(
+            os.path.abspath(os.path.expanduser(collection_output_root)), "scene_info.json"
+        )
+    else:
+        file_path = os.path.join(parent_directory, f"../../{scene_info_path}/{task_name}/{setting}/scene_info.json")
     try:
         with open(file_path, "r") as f:
             scene_data = json.load(f)
@@ -164,7 +170,13 @@ def extract_episodes_from_scene_info(scene_info: Dict) -> List[Dict[str, str]]:
 
 def save_episode_descriptions(task_name: str, setting: str, generated_descriptions: List[Dict]):
     """Save generated descriptions to output files."""
-    output_dir = os.path.join(parent_directory, f"../../data/{task_name}/{setting}/instructions")
+    collection_output_root = os.environ.get("ROBOTWIN_COLLECTION_OUTPUT_ROOT")
+    if collection_output_root:
+        output_dir = os.path.join(
+            os.path.abspath(os.path.expanduser(collection_output_root)), "instructions"
+        )
+    else:
+        output_dir = os.path.join(parent_directory, f"../../data/{task_name}/{setting}/instructions")
     os.makedirs(output_dir, exist_ok=True)
 
     for episode_desc in generated_descriptions:

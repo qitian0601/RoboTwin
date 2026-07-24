@@ -1,0 +1,10 @@
+{
+  "seen": [
+    "Use {a} to place the {A} into the {C}, then use {b} to place the {B} into the {C}.",
+    "Put the {A} into the {C} first, then put the {B} into the {C}."
+  ],
+  "unseen": [
+    "Move the {A} with {a} into the {C} before moving the {B} with {b} into the {C}.",
+    "Place the {A} and {B} into the {C}, starting with {a} and then {b}."
+  ]
+}

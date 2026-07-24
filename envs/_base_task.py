@@ -87,7 +87,11 @@ class Base_Task(gym.Env):
         self.plan_success = True
         self.step_lim = None
         self.fix_gripper = False
-        self.setup_scene()
+        self.sim_step_count = 0
+        self.scene_step_callback = None
+        self._fixed_rate_recording = None
+        self._recording_timing = None
+        self.setup_scene(**kwags)
 
         self.left_js = None
         self.right_js = None
@@ -97,7 +101,9 @@ class Base_Task(gym.Env):
 
         self.now_obs = {}
         self.take_action_cnt = 0
+        self.policy_control_frame_count = 0
         self.eval_video_path = kwags.get("eval_video_save_dir", None)
+        self.eval_video_stride = max(1, int(kwags.get("eval_video_stride", 1)))
 
         self.save_freq = kwags.get("save_freq")
         self.world_pcd = None
@@ -117,7 +123,14 @@ class Base_Task(gym.Env):
 
         self.instruction = None  # for Eval
 
-        self.create_table_and_wall(table_xy_bias=table_xy_bias, table_height=0.74)
+        self.create_table_and_wall(
+            table_xy_bias=kwags.get("table_xy_bias", table_xy_bias),
+            table_height=0.74,
+            table_length=kwags.get("table_length", 1.2),
+            table_width=kwags.get("table_width", 0.7),
+            table_thickness=kwags.get("table_thickness", 0.05),
+            table_texture_id=kwags.get("table_texture_id"),
+        )
         self.load_robot(**kwags)
         self.load_camera(**kwags)
         self.robot.move_to_homestate()
@@ -158,6 +171,74 @@ class Base_Task(gym.Env):
 
         self.stage_success_tag = False
 
+    def set_scene_step_callback(self, callback=None, reset_counter=False):
+        """Register an optional callback that runs after each physics step."""
+        self.scene_step_callback = callback
+        if reset_counter:
+            self.sim_step_count = 0
+
+    def start_fixed_rate_recording(self, sample_hz):
+        """Record control frames at a stable rate independent of physics Hz."""
+        if self._fixed_rate_recording is not None:
+            raise RuntimeError("Fixed-rate recording is already active")
+        sample_hz = float(sample_hz)
+        physics_hz = 1.0 / self.sim_timestep
+        if not 0 < sample_hz <= physics_hz:
+            raise ValueError(
+                f"sample_hz must be in (0, {physics_hz}], got {sample_hz}"
+            )
+
+        state = {
+            "sample_hz": sample_hz,
+            "sample_index": 0,
+            "saved_save_freq": self.save_freq,
+            "saved_callback": self.scene_step_callback,
+        }
+        self._fixed_rate_recording = state
+        self.save_freq = None
+        self.sim_step_count = 0
+
+        def capture(sample_index, sim_step):
+            self._recording_timing = {
+                "sample_index": int(sample_index),
+                "sim_step": int(sim_step),
+                "sim_time_s": float(sim_step * self.sim_timestep),
+                "sample_hz": sample_hz,
+            }
+            self._take_picture()
+
+        # Frame zero is the observation before the first expert control step.
+        capture(sample_index=0, sim_step=0)
+        state["sample_index"] = 1
+
+        def on_step(sim_step):
+            saved_callback = state["saved_callback"]
+            if saved_callback is not None:
+                saved_callback(sim_step)
+
+            sample_index = state["sample_index"]
+            target_step = round(sample_index / (sample_hz * self.sim_timestep))
+            if sim_step >= target_step:
+                capture(sample_index=sample_index, sim_step=sim_step)
+                state["sample_index"] = sample_index + 1
+
+        self.scene_step_callback = on_step
+
+    def stop_fixed_rate_recording(self):
+        if self._fixed_rate_recording is None:
+            return
+        state = self._fixed_rate_recording
+        self.scene_step_callback = state["saved_callback"]
+        self.save_freq = state["saved_save_freq"]
+        self._fixed_rate_recording = None
+        self._recording_timing = None
+
+    def _step_scene(self):
+        self.scene.step()
+        self.sim_step_count += 1
+        if self.scene_step_callback is not None:
+            self.scene_step_callback(self.sim_step_count)
+
     def check_stable(self):
         actors_list, actors_pose_list = [], []
         for actor in self.scene.get_all_actors():
@@ -171,7 +252,7 @@ class Base_Task(gym.Env):
         def check(times):
             nonlocal self, is_stable, actors_list, actors_pose_list
             for _ in range(times):
-                self.scene.step()
+                self._step_scene()
                 for idx, actor in enumerate(actors_list):
                     actors_pose_list[idx].append(actor.get_pose())
 
@@ -185,7 +266,7 @@ class Base_Task(gym.Env):
 
         is_stable = True
         for _ in range(2000):
-            self.scene.step()
+            self._step_scene()
         for idx, actor in enumerate(actors_list):
             actors_pose_list.append([actor.get_pose()])
         check(500)
@@ -211,16 +292,20 @@ class Base_Task(gym.Env):
         # give renderer to sapien sim
         self.engine.set_renderer(self.renderer)
 
-        sapien.render.set_camera_shader_dir("rt")
-        sapien.render.set_ray_tracing_samples_per_pixel(32)
-        sapien.render.set_ray_tracing_path_depth(8)
-        sapien.render.set_ray_tracing_denoiser("oidn")
+        render_quality = kwargs.get("render_quality", {})
+        camera_shader_dir = render_quality.get("camera_shader_dir", "rt")
+        sapien.render.set_camera_shader_dir(camera_shader_dir)
+        sapien.render.set_viewer_shader_dir(render_quality.get("viewer_shader_dir", camera_shader_dir))
+        sapien.render.set_ray_tracing_samples_per_pixel(render_quality.get("ray_tracing_samples_per_pixel", 64))
+        sapien.render.set_ray_tracing_path_depth(render_quality.get("ray_tracing_path_depth", 8))
+        sapien.render.set_ray_tracing_denoiser(render_quality.get("ray_tracing_denoiser", "oidn"))
 
         # declare sapien scene
         scene_config = sapien.SceneConfig()
         self.scene = self.engine.create_scene(scene_config)
         # set simulation timestep
-        self.scene.set_timestep(kwargs.get("timestep", 1 / 250))
+        self.sim_timestep = kwargs.get("timestep", 1 / 250)
+        self.scene.set_timestep(self.sim_timestep)
         # add ground to scene
         self.scene.add_ground(kwargs.get("ground_height", 0))
         # set default physical material
@@ -268,7 +353,15 @@ class Base_Task(gym.Env):
                 y=kwargs.get("camera_rpy_y", 2.45),
             )
 
-    def create_table_and_wall(self, table_xy_bias=[0, 0], table_height=0.74):
+    def create_table_and_wall(
+        self,
+        table_xy_bias=[0, 0],
+        table_height=0.74,
+        table_length=1.2,
+        table_width=0.7,
+        table_thickness=0.05,
+        table_texture_id=None,
+    ):
         self.table_xy_bias = table_xy_bias
         wall_texture, table_texture = None, None
         table_height += self.table_z_bias
@@ -291,7 +384,7 @@ class Base_Task(gym.Env):
             if np.random.rand() <= self.clean_background_rate:
                 self.table_texture = None
         else:
-            self.wall_texture, self.table_texture = None, None
+            self.wall_texture, self.table_texture = None, table_texture_id
 
         self.wall = create_box(
             self.scene,
@@ -306,10 +399,10 @@ class Base_Task(gym.Env):
         self.table = create_table(
             self.scene,
             sapien.Pose(p=[table_xy_bias[0], table_xy_bias[1], table_height]),
-            length=1.2,
-            width=0.7,
+            length=table_length,
+            width=table_width,
             height=table_height,
-            thickness=0.05,
+            thickness=table_thickness,
             is_static=True,
             texture_id=self.table_texture,
         )
@@ -411,7 +504,7 @@ class Base_Task(gym.Env):
             **kwags,
         )
         self.cameras.load_camera(self.scene)
-        self.scene.step()  # run a physical step
+        self._step_scene()  # run a physical step
         self.scene.update_render()  # sync pose from SAPIEN to renderer
 
     # =========================================================== Sapien ===========================================================
@@ -429,7 +522,12 @@ class Base_Task(gym.Env):
             now_ambient_light = self.scene.ambient_light
             now_ambient_light = np.clip(np.array(now_ambient_light) + np.random.rand(3) * 0.2 - 0.1, 0, 1)
             self.scene.set_ambient_light(now_ambient_light)
-        self.cameras.update_wrist_camera(self.robot.left_camera.get_pose(), self.robot.right_camera.get_pose())
+        self.cameras.update_wrist_camera(
+            self.robot.left_camera.get_pose(),
+            self.robot.right_camera.get_pose(),
+            self.robot.get_left_tcp_pose(),
+            self.robot.get_right_tcp_pose(),
+        )
         self.scene.update_render()
 
     # =========================================================== Basic APIs ===========================================================
@@ -443,6 +541,8 @@ class Base_Task(gym.Env):
             "joint_action": {},
             "endpose": {},
         }
+        if self._recording_timing is not None:
+            pkl_dic["timing"] = dict(self._recording_timing)
 
         pkl_dic["observation"] = self.cameras.get_config()
         # rgb
@@ -868,7 +968,7 @@ class Base_Task(gym.Env):
                 )
                 now_right_id += 1
 
-            self.scene.step()
+            self._step_scene()
             if self.render_freq and i % self.render_freq == 0:
                 self._update_render()
                 self.viewer.render()
@@ -1461,7 +1561,7 @@ class Base_Task(gym.Env):
                     right_gripper["per_step"],
                 )  # TODO
 
-            self.scene.step()
+            self._step_scene()
 
             if self.render_freq and control_idx % self.render_freq == 0:
                 self._update_render()
@@ -1476,11 +1576,119 @@ class Base_Task(gym.Env):
 
         return True  # TODO: maybe need try error
 
+    def take_policy_action(
+        self,
+        action,
+        fps=30,
+        exact_policy_tracking=True,
+        max_policy_step_rad=0.05,
+        max_gripper_step=0.5,
+        max_executor_step_rad=0.005,
+        max_executor_gripper_step=0.04,
+    ):
+        """Execute one policy target at policy rate without per-target TOPP replanning."""
+        if self.take_action_cnt == self.step_lim or self.eval_success:
+            return
+
+        action = np.asarray(action, dtype=np.float64)
+        if action.shape != (16,):
+            raise ValueError(f"Expected a 16D dual-arm policy action, got {action.shape}")
+
+        left_current = np.asarray(self.robot.get_left_arm_jointState(), dtype=np.float64)
+        right_current = np.asarray(self.robot.get_right_arm_jointState(), dtype=np.float64)
+        left_target = np.concatenate((action[:7], [action[7]]))
+        right_target = np.concatenate((action[8:15], [action[15]]))
+
+        left_limits = np.asarray(
+            [joint.get_limits()[0] for joint in self.robot.left_arm_joints],
+            dtype=np.float64,
+        )
+        right_limits = np.asarray(
+            [joint.get_limits()[0] for joint in self.robot.right_arm_joints],
+            dtype=np.float64,
+        )
+        left_target[:7] = np.clip(left_target[:7], left_limits[:, 0], left_limits[:, 1])
+        right_target[:7] = np.clip(right_target[:7], right_limits[:, 0], right_limits[:, 1])
+
+        if not exact_policy_tracking:
+            left_target[:7] = left_current[:7] + np.clip(
+                left_target[:7] - left_current[:7], -max_policy_step_rad, max_policy_step_rad
+            )
+            right_target[:7] = right_current[:7] + np.clip(
+                right_target[:7] - right_current[:7], -max_policy_step_rad, max_policy_step_rad
+            )
+            left_target[7] = left_current[7] + np.clip(
+                left_target[7] - left_current[7], -max_gripper_step, max_gripper_step
+            )
+            right_target[7] = right_current[7] + np.clip(
+                right_target[7] - right_current[7], -max_gripper_step, max_gripper_step
+            )
+
+        steps_per_policy_frame = 1.0 / (self.sim_timestep * fps)
+        start_step = round(self.policy_control_frame_count * steps_per_policy_frame)
+        end_step = round((self.policy_control_frame_count + 1) * steps_per_policy_frame)
+        executor_steps = max(1, end_step - start_step)
+        self.policy_control_frame_count += 1
+
+        left_command = left_current.copy()
+        right_command = right_current.copy()
+        zero_velocity = np.zeros(7, dtype=np.float64)
+        for step in range(1, executor_steps + 1):
+            if exact_policy_tracking:
+                ratio = step / executor_steps
+                left_command = left_current + ratio * (left_target - left_current)
+                right_command = right_current + ratio * (right_target - right_current)
+            else:
+                left_command[:7] += np.clip(
+                    left_target[:7] - left_command[:7],
+                    -max_executor_step_rad,
+                    max_executor_step_rad,
+                )
+                right_command[:7] += np.clip(
+                    right_target[:7] - right_command[:7],
+                    -max_executor_step_rad,
+                    max_executor_step_rad,
+                )
+                left_command[7] += np.clip(
+                    left_target[7] - left_command[7],
+                    -max_executor_gripper_step,
+                    max_executor_gripper_step,
+                )
+                right_command[7] += np.clip(
+                    right_target[7] - right_command[7],
+                    -max_executor_gripper_step,
+                    max_executor_gripper_step,
+                )
+
+            self.robot.set_arm_joints(left_command[:7], zero_velocity, "left")
+            self.robot.set_arm_joints(right_command[:7], zero_velocity, "right")
+            self.robot.set_gripper(left_command[7], "left", gripper_eps=0)
+            self.robot.set_gripper(right_command[7], "right", gripper_eps=0)
+            self._step_scene()
+
+            if self.check_success():
+                self.eval_success = True
+                break
+
+        self.take_action_cnt += 1
+        print(f"step: \033[92m{self.take_action_cnt} / {self.step_lim}\033[0m", end="\r")
+        self._update_render()
+        if self.render_freq:
+            self.viewer.render()
+
+        if (
+            self.eval_video_path is not None
+            and self.take_action_cnt % self.eval_video_stride == 0
+        ):
+            self.cameras.update_picture()
+            frame = self.cameras.get_rgb()["head_camera"]["rgb"]
+            self.eval_video_ffmpeg.stdin.write(frame.tobytes())
+
     def take_action(self, action, action_type:Literal['qpos', 'ee']='qpos'):  # action_type: qpos or ee
         if self.take_action_cnt == self.step_lim or self.eval_success:
             return
 
-        eval_video_freq = 1  # fixed
+        eval_video_freq = self.eval_video_stride
         if (self.eval_video_path is not None and self.take_action_cnt % eval_video_freq == 0):
             self.eval_video_ffmpeg.stdin.write(self.now_obs["observation"]["head_camera"]["rgb"].tobytes())
 
@@ -1651,7 +1859,7 @@ class Base_Task(gym.Env):
 
                 now_right_id += 1
 
-            self.scene.step()
+            self._step_scene()
             self._update_render()
                 
             if self.check_success():

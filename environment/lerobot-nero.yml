@@ -1,0 +1,21 @@
+name: lerobot-nero
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - ffmpeg
+  - pip:
+      - torch
+      - torchvision
+      - transformers
+      - safetensors
+      - datasets
+      - draccus
+      - grpcio
+      - protobuf
+      - pyarrow
+      - opencv-python-headless
+      - av
