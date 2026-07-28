@@ -1,0 +1,16 @@
+RecordTemp/
+myDataset/
+__pycache__/
+*.py[cod]
+
+# Generated datasets, checkpoints, videos, and local caches stay outside Git.
+data/
+outputs/
+.cache/
+*.zip
+MUJOCO_LOG.TXT
+
+# Local credentials must never be committed.
+.env
+.env.*
+!.env.example

@@ -1,0 +1,61 @@
+<mujoco model="nero scene">
+  <include file="nero_arm.xml"/>
+
+  <statistic center="0 0 0.3" extent="0.8"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="140" elevation="-30"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light directional="true" diffuse=".8 .8 .8" specular=".2 .2 .2" pos="0 0 5" dir="0 0 -1"/>
+    <geom name="floor" type="plane" size="1 1 .05" pos="0 0 0" rgba=".8 .8 .8 1" material="groundplane"/>
+
+    <!-- 操作台 -->
+    <body name="table" pos="0 0.6 0.35">
+      <!-- <geom type="box" size="0.3 0.3 0.02" rgba="0.8 0.7 0.5 1" mass="10"/> -->
+      <geom type="box" size="0.3 0.3 0.02" rgba="0.8 0.7 0.5 1" mass="10"
+      solimp="0.99 0.999 0.0001"
+      solref="0.001 1"
+      friction="1.0 0.1 0.001"
+      condim="6"/>
+    </body>
+
+    <!-- 目标物体：圆柱体 radius=0.025 half-height=0.03 -->
+    <body name="target_block" pos="0 0.4 0.403">
+      <freejoint name="block_joint"/>
+      <geom type="cylinder" size="0.025 0.03" mass="0.10"
+            rgba="0.8 0.2 0.2 1"
+            friction="2.0 0.1 0.001"     
+            solimp="0.95 0.99 0.001"        
+            solref="0.005 1"/>              
+    </body>
+
+    <!-- mocap 末端控制点（通过手柄控制） -->
+    <!-- 初始位置 = home 姿态下 TCP 世界坐标 [0,-0.032,0.419]（底座z=0.76，关节[0,0,0,0.565,0,0.110,0]）-->
+    <body name="target_mocap" mocap="true" pos="0 -0.032 0.419">
+      <geom type="sphere" size="0.015" rgba="1 0 0 0.4"
+            contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- 俯视图：从正上方向下看，对准桌面中心 -->
+    <camera name="top_view"  pos="-0.05 0.4 1.35" euler="0 0 0"/>
+    <!-- 侧视图：从机械臂右侧斜前方看向工作区 -->
+    <camera name="side_view" pos="0.7 0.0 0.9" xyaxes="0.336 0.942 0.000 -0.446 0.159 0.881"/>
+  </worldbody>
+
+  <!-- 将 mocap 绑定到 Nero 臂末端 -->
+  <equality>
+    <weld body1="target_mocap" body2="gripper_base" solref="0.02 1" solimp="0.9 0.99 0.0001 0.5 2"/>
+  </equality>
+
+</mujoco>

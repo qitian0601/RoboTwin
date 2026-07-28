@@ -1,0 +1,218 @@
+<mujoco model="nero_arm">
+  <!--
+    Nero 机械臂 MJCF - 由 MuJoCo URDF 解析器自动转换，运动学完全正确
+    Home pose: j=[0, 0, 0, 0.565, 0, 0.110, 0], gripper=[-0.025, 0.025]
+    base_link 安装在 z=0.76 (桌面 z=0.37, TCP home world z ~0.419+offset)
+  -->
+
+  <compiler angle="radian" meshdir="nero/meshes/"/>
+
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
+
+  <asset>
+    <mesh name="base_link"      file="base_link.stl"/>
+    <mesh name="link1"          file="link1.stl"/>
+    <mesh name="link2"          file="link2.stl"/>
+    <mesh name="link3"          file="link3.stl"/>
+    <mesh name="link4"          file="link4.stl"/>
+    <mesh name="link5"          file="link5.stl"/>
+    <mesh name="link6"          file="link6.stl"/>
+    <mesh name="link7"          file="link7.stl"/>
+    <mesh name="gripper_flange" file="gripper_flange.stl"/>
+    <mesh name="gripper_base"   file="gripper_base.stl"/>
+    <mesh name="gripper_link1"  file="gripper_link1.stl"/>
+    <mesh name="gripper_link2"  file="gripper_link2.stl"/>
+  </asset>
+
+  <default>
+    <joint damping="1.0" armature="0.05" frictionloss="0.05"/>
+    <position kp="200" kv="20"/>
+    <geom friction="0.5 0.1 0.01" condim="6"/>
+    <!-- <geom friction="0.5 0.1 0.01" condim="3" solimp="0.9 0.95 0.001" solref="0.02 1"/> -->
+  </default>
+
+  <worldbody>
+    <!-- base_link 安装在 z=0.76 处（台座高度） -->
+    <body name="base_link" pos="0 0 0.0">
+      <geom type="mesh" mesh="base_link" rgba="0.7 0.7 0.7 1"
+            contype="0" conaffinity="0"/>
+
+      <!-- joint1: xyz=0 0 0.138, axis Z -->
+      <body name="link1" pos="0 0 0.138">
+        <joint name="joint1" type="hinge" axis="0 0 1"
+               range="-2.70526 2.70526"/>
+        <inertial pos="-0.000768 -0.0001 -0.00686" mass="0.767105"
+                  diaginertia="0.000668 0.000545 0.000514"/>
+        <geom type="mesh" mesh="link1" rgba="0.8 0.4 0.1 1"
+              contype="0" conaffinity="0"/>
+
+        <!-- joint2: quat from URDF parser -->
+        <body name="link2" quat="1.89469e-08 1.89469e-08 0.707107 -0.707107">
+          <joint name="joint2" type="hinge" axis="0 0 1"
+                 range="-1.74 1.74"/>
+          <inertial pos="0.000797 -0.07890 0.00112" mass="0.693819"
+                    diaginertia="0.002011 0.001822 0.000632"/>
+          <geom type="mesh" mesh="link2" rgba="0.8 0.4 0.1 1"
+                contype="0" conaffinity="0"/>
+
+          <!-- joint3: pos=[0,-0.31,0], quat from URDF parser -->
+          <body name="link3" pos="0 -0.31 0" quat="-1.37922e-08 1.37922e-08 -0.707107 0.707107">
+            <joint name="joint3" type="hinge" axis="0 0 1"
+                   range="-2.75 2.75"/>
+            <inertial pos="0.000145 -0.00121 -0.04861" mass="0.672465"
+                      diaginertia="0.003432 0.003387 0.000288"/>
+            <geom type="mesh" mesh="link3" rgba="0.6 0.6 0.2 1"
+                  contype="0" conaffinity="0"/>
+
+            <!-- joint4: quat from URDF parser -->
+            <body name="link4" quat="-1.37922e-08 1.37922e-08 -0.707107 0.707107">
+              <joint name="joint4" type="hinge" axis="0 0 1"
+                     range="-1.01 2.14"/>
+              <inertial pos="-0.000313 -0.05675 0.000761" mass="0.484514"
+                        diaginertia="0.000504 0.000403 0.000233"/>
+              <geom type="mesh" mesh="link4" rgba="0.6 0.6 0.2 1"
+                    contype="0" conaffinity="0"/>
+
+              <!-- joint5: pos=[0,-0.27001,0], quat from URDF parser -->
+              <body name="link5" pos="0 -0.27001 0" quat="0.5 0.5 -0.5 0.5">
+                <joint name="joint5" type="hinge" axis="0 0 1"
+                       range="-2.75 2.75"/>
+                <inertial pos="0.00266 0.00201 -0.11621" mass="0.583684"
+                          diaginertia="0.000897 0.000860 0.000215"/>
+                <geom type="mesh" mesh="link5" rgba="0.3 0.5 0.7 1"
+                      contype="0" conaffinity="0"/>
+
+                <!-- joint6: quat from URDF parser -->
+                <body name="link6" quat="0.5 0.5 -0.5 0.5">
+                  <joint name="joint6" type="hinge" axis="0 0 1"
+                         range="-0.73 0.95"/>
+                  <inertial pos="0.00010 0.00108 -0.00019" mass="0.314041"
+                            diaginertia="0.000060 0.000058 0.000047"/>
+                  <geom type="mesh" mesh="link6" rgba="0.3 0.5 0.7 1"
+                        contype="0" conaffinity="0"/>
+
+                  <!-- joint7: pos=[0,-0.0235,0], quat from URDF parser -->
+                  <body name="link7" pos="0 -0.0235 0" quat="0.707107 0.707107 0 0">
+                    <joint name="joint7" type="hinge" axis="0 0 1"
+                           range="-1.5708 1.5708"/>
+                    <inertial pos="0.033 0.003 0.005" mass="0.497713"
+                              diaginertia="0.001069 0.000845 0.000513"/>
+                    <geom type="mesh" mesh="link7" rgba="0.2 0.2 0.8 1"
+                          contype="0" conaffinity="0"/>
+
+                    <!-- gripper_flange: fixed, from URDF parser -->
+                    <geom pos="0.032 0 -0.0235"
+                          quat="0.499998 -0.5 0.500002 -0.5"
+                          type="mesh" mesh="gripper_flange"
+                          rgba="0.4 0.4 0.4 1" contype="0" conaffinity="0"/>
+
+                    <!-- gripper_base: fixed -->
+                    <body name="gripper_base" pos="0.0375 0 -0.0235"
+                          quat="0.499998 -0.5 0.500002 -0.5">
+                      <inertial pos="0 0 0.032" mass="0.45"
+                                diaginertia="1e-3 1e-3 5e-4"/>
+                      <geom type="mesh" mesh="gripper_base"
+                            rgba="0.2 0.2 0.2 1" contype="0" conaffinity="0"/>
+                      <!-- 新增：碰撞 box，覆盖底座主体 -->
+                        <geom type="box" 
+                              pos="0 0 0.04"             
+                              size="0.02 0.02 0.015"       
+                              contype="1" conaffinity="1"
+                              solimp="0.95 0.99 0.001"
+                              solref="0.005 1"
+                              rgba="0 1 0 0.3"/>  
+                        <geom type="box" 
+                              pos="0 0 0.055"             
+                              size="0.02 0.06 0.005"       
+                              contype="1" conaffinity="1"
+                              solimp="0.95 0.99 0.001"
+                              solref="0.005 1"
+                              rgba="0 1 0 0.3"/>   
+
+                      <!-- TCP site: 0.0958 along Z in gripper_base frame -->
+                      <site name="gripper_tcp" pos="0 0 0.0958" size="0.008"
+                            rgba="1 0 0 1"/>
+                    </body>
+
+                    <!-- gripper_link1: from URDF parser -->
+                    <body name="gripper_link1"
+                          pos="0.1733 0 -0.0235"
+                          quat="-1.27026e-06 0.707108 0.707105 -1.30815e-06">
+                      <!-- <joint name="gripper_joint1" type="slide" axis="0 0 1"
+                             range="0 0.05"/> -->
+                        <joint name="gripper_joint1" type="slide" axis="0 0 1"
+                              range="0 0.05"
+                              damping="50"
+                              armature="0.01"
+                              frictionloss="2.0"/>
+                      <inertial pos="0.000651 -0.04919 0.00972" mass="0.025"
+                                diaginertia="7.75e-05 7.37e-05 5.09e-06"/>
+                      <geom type="mesh" mesh="gripper_link1"
+                            rgba="0.7 0.2 0.2 1" contype="1" conaffinity="1"
+                            friction="4.0 1.0 0.05"/>   ← ✅ 只放link1的geom
+                      <!-- <geom type="mesh" mesh="gripper_link1"
+                            rgba="0.7 0.2 0.2 1" contype="1" conaffinity="1"
+                            friction="4.0 1.0 0.01" condim="6"
+                            solimp="0.95 0.99 0.001" solref="0.01 1"/> -->
+                    </body>
+
+                    <!-- gripper_link2: from URDF parser -->
+                    <body name="gripper_link2"
+                          pos="0.1733 0 -0.0235"
+                          quat="0.707105 -1.30815e-06 1.30815e-06 -0.707108">
+                      <!-- <joint name="gripper_joint2" type="slide" axis="0 0 -1"
+                             range="-0.05 0"/> -->
+                        <joint name="gripper_joint2" type="slide" axis="0 0 -1"
+                              range="-0.05 0"
+                              damping="50"
+                              armature="0.01"
+                              frictionloss="2.0"/>
+                      <inertial pos="0.000651 -0.04919 0.00972" mass="0.025"
+                                diaginertia="7.75e-05 7.37e-05 5.09e-06"/>
+                      <geom type="mesh" mesh="gripper_link2"
+                            rgba="0.7 0.2 0.2 1" contype="1" conaffinity="1"
+                            friction="4.0 1.0 0.05"/>   ← ✅ 只放link2的geom
+                      <!-- <geom type="mesh" mesh="gripper_link2"
+                            rgba="0.7 0.2 0.2 1" contype="1" conaffinity="1"
+                            friction="4.0 1.0 0.01" condim="6"
+                            solimp="0.95 0.99 0.001" solref="0.01 1"/> -->
+                    </body>
+
+                  </body><!-- link7 -->
+                </body><!-- link6 -->
+              </body><!-- link5 -->
+            </body><!-- link4 -->
+          </body><!-- link3 -->
+        </body><!-- link2 -->
+      </body><!-- link1 -->
+    </body><!-- base_link -->
+  </worldbody>
+
+  <!-- 新增在这里 -->
+  <contact>
+    <exclude body1="gripper_base" body2="gripper_link1"/>
+    <exclude body1="gripper_base" body2="gripper_link2"/>
+    <exclude body1="gripper_base" body2="link7"/>
+  </contact>
+
+  <actuator>
+    <position name="joint1_act" joint="joint1" kp="200" kv="20" ctrlrange="-2.70526 2.70526"/>
+    <position name="joint2_act" joint="joint2" kp="200" kv="20" ctrlrange="-1.74 1.74"/>
+    <position name="joint3_act" joint="joint3" kp="200" kv="20" ctrlrange="-2.75 2.75"/>
+    <position name="joint4_act" joint="joint4" kp="200" kv="20" ctrlrange="-1.01 2.14"/>
+    <position name="joint5_act" joint="joint5" kp="200" kv="20" ctrlrange="-2.75 2.75"/>
+    <position name="joint6_act" joint="joint6" kp="200" kv="20" ctrlrange="-0.73 0.95"/>
+    <position name="joint7_act" joint="joint7" kp="100" kv="10" ctrlrange="-1.5708 1.5708"/>
+    <position name="gripper_joint1_act" joint="gripper_joint1" kp="500" kv="50" ctrlrange="0 0.05"/>
+    <position name="gripper_joint2_act" joint="gripper_joint2" kp="500" kv="50" ctrlrange="-0.05 0"/>
+  </actuator>
+
+  <keyframe>
+    <!-- Home: j=[0,0,0,0.565,0,0.110,0], gripper=[-0.025, 0.025]
+         base at z=0.76; TCP world z computed after this is set -->
+    <key name="home"
+         qpos="0.0 0.0 0.0 0.565 0.0 0.110 0.0 -0.045 0.045"
+         ctrl="0.0 0.0 0.0 0.565 0.0 0.110 0.0 -0.045 0.045"/>
+  </keyframe>
+
+</mujoco>

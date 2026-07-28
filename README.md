@@ -69,6 +69,13 @@ See [RoboTwin 2.0 Document (Usage - Install & Download)](https://robotwin-platfo
 模型 checkpoint、adapter 权重、数据集和 `outputs/` 不在 Git 仓库中，需要在目标机器
 上重新生成或从外部模型存储下载。
 
+## pushT-so100 子项目
+
+本 fork 的 [`pushT-so100`](pushT-so100/README_ROBOTWIN.md) 目录包含独立的 MuJoCo
+Push-T/NERO/SO100 数据采集、ACT、Diffusion Policy 和 PI0.5 实验代码。它与 RoboTwin
+共享 Git 仓库，但应使用独立 Conda 环境；数据集、模型 checkpoint、缓存和运行输出不
+提交到 Git。
+
 # 🤷‍♂️ Tasks Informations
 See [RoboTwin 2.0 Tasks Doc](https://robotwin-platform.github.io/doc/tasks/index.html) for more details.
 

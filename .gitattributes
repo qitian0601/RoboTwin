@@ -8,3 +8,9 @@ assets/embodiments/nero/**/*.urdf filter=lfs diff=lfs merge=lfs -text
 assets/embodiments/nero/*.stl filter=lfs diff=lfs merge=lfs -text
 assets/embodiments/nero/**/*.stl filter=lfs diff=lfs merge=lfs -text
 assets/embodiments/nero/**/*.dae filter=lfs diff=lfs merge=lfs -text
+
+# Binary assets vendored with the independent pushT-so100 MuJoCo project.
+pushT-so100/**/*.stl filter=lfs diff=lfs merge=lfs -text
+pushT-so100/**/*.dae filter=lfs diff=lfs merge=lfs -text
+pushT-so100/**/*.png filter=lfs diff=lfs merge=lfs -text
+pushT-so100/**/*.gif filter=lfs diff=lfs merge=lfs -text
