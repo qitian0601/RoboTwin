@@ -9,20 +9,17 @@ INPUT_DIR="${INPUT_DIR:-${ROOT}/data/${TASK_NAME}/${TASK_CONFIG}}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT}/data/${TASK_NAME}_lerobot_v3}"
 REPO_ID="${REPO_ID:-${TASK_NAME}_lerobot_v3}"
 
-# Prefer the local official LeRobot checkout. The bundled Nero runtime tracks a
-# newer Python syntax level and cannot be imported by the Python 3.10 `lerobot`
-# environment used for offline conversion on this workstation.
-OFFICIAL_LEROBOT_SRC="${ROOT}/../lerobot/src"
-if [[ -z "${ROBOTWIN_LEROBOT_SRC:-}" && -d "${OFFICIAL_LEROBOT_SRC}" ]]; then
-  export ROBOTWIN_LEROBOT_SRC="${OFFICIAL_LEROBOT_SRC}"
+LEROBOT_SRC="${ROBOTWIN_LEROBOT_SRC:-${ROOT}/third_party/lerobot_nero_runtime/src}"
+if [[ ! -d "${LEROBOT_SRC}/lerobot" ]]; then
+  echo "Bundled LeRobot source does not exist: ${LEROBOT_SRC}" >&2
+  exit 1
 fi
 
 cd "${ROOT}"
-# The dedicated `lerobot` environment currently obtains h5py from qt's user
-# site-packages. Keep simulator processes isolated, but allow that dependency
-# for this offline conversion step.
-unset PYTHONNOUSERSITE
-conda run --no-capture-output -n "${ROBOTWIN_LEROBOT_ENV:-lerobot}" \
+export PYTHONNOUSERSITE=1
+export ROBOTWIN_LEROBOT_SRC="${LEROBOT_SRC}"
+export PYTHONPATH="${LEROBOT_SRC}:${PYTHONPATH:-}"
+conda run --no-capture-output -n "${ROBOTWIN_LEROBOT_ENV:-lerobot-nero}" \
   "${ROBOTWIN_LEROBOT_PYTHON_NAME:-python}" -u tools/convert_robotwin_to_lerobot_v3.py \
   --input-dir "${INPUT_DIR}" \
   --output-dir "${OUTPUT_DIR}" \

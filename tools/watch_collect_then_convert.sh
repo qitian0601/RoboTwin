@@ -84,10 +84,10 @@ while true; do
 done
 
 echo "[$(date +"%F %T")] Collection appears finished; reason=${finish_reason}; starting conversion."
-conda run --no-capture-output -n "${ROBOTWIN_LEROBOT_ENV:-lerobot}" \
-  "${ROBOTWIN_LEROBOT_PYTHON_NAME:-python}" tools/convert_robotwin_to_lerobot_v3.py \
-  --input-dir "$INPUT_DIR" \
-  --output-dir "$OUTPUT_DIR" \
-  --repo-id "$REPO_ID"
+INPUT_DIR="${INPUT_DIR}" \
+OUTPUT_DIR="${OUTPUT_DIR}" \
+REPO_ID="${REPO_ID}" \
+  tools/convert_nero_task_lerobot_v3.sh \
+    place_two_cubes_box demo_nero_two_cubes
 
 echo "[$(date +"%F %T")] Conversion finished: ${OUTPUT_DIR}"

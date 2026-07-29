@@ -6,26 +6,47 @@
 
 ## 安装
 
-先按照 [`script/_install.sh`](../script/_install.sh) 安装 RoboTwin 依赖，再根据
-[`environment/robotwin-nero.yml`](../environment/robotwin-nero.yml) 和
+根据 [`environment/robotwin-nero.yml`](../environment/robotwin-nero.yml) 和
 [`environment/lerobot-nero.yml`](../environment/lerobot-nero.yml) 建立两个 Python
-环境。需要 NVIDIA GPU、CUDA、ffmpeg 和 CuRobo v0.7.8；不同机器的 CUDA/PyTorch
-组合应保持兼容。
+环境。需要 NVIDIA GPU、兼容的驱动、ffmpeg 和 Git LFS。RoboTwin 的 Torch 必须在运行
+安装脚本之前按目标 GPU 单独安装；通用 requirements 不会再覆盖用户选择的 CUDA wheel。
+
+当前 RTX 5090 工作站验证的是 Python 3.10、Torch 2.10.0+cu128、torchvision
+0.25.0+cu128、Warp 1.12.0 和 CuRobo v0.7.8：
 
 ```bash
 conda env create -f environment/robotwin-nero.yml
-conda env create -f environment/lerobot-nero.yml
-conda run -n RoboTwin5090 python -m pip install -r script/requirements.txt
+conda activate RoboTwin5090
+python -m pip install torch==2.10.0 torchvision==0.25.0 \
+  --index-url https://download.pytorch.org/whl/cu128
 bash script/_install.sh
+
+conda deactivate
+conda env create -f environment/lerobot-nero.yml
 ```
 
-如果环境名称或安装位置不同，用环境变量覆盖默认值：
+其他 GPU 应从 PyTorch 官方安装页选择受该显卡和驱动支持的 wheel，再运行 `_install.sh`。
+不要在安装完成后用旧版 requirements 覆盖 Torch。如果主动更换了 Torch，使用
+`ROBOTWIN_REINSTALL_PYTORCH3D=1 bash script/_install.sh` 重编译 PyTorch3D。
+
+仓库内置的 `lerobot-nero` 环境固定了已经验证的 PI0.5 依赖，并同时用于模型服务、
+Adapter 训练和 RoboTwin 到 LeRobot v3 的离线转换。如果环境名称或安装位置不同，使用
+环境变量覆盖默认值：
 
 ```bash
 export ROBOTWIN_PYTHON=python
 export ROBOTWIN_LEROBOT_SRC="$PWD/third_party/lerobot_nero_runtime/src"
 export ROBOTWIN_PI05_SERVER_PYTHON=python
 export ROBOTWIN_PI05_SERVER_SRC="$PWD/third_party/lerobot_nero_runtime/src"
+export ROBOTWIN_LEROBOT_ENV=lerobot-nero
+```
+
+克隆后先执行 `git lfs pull && git lfs fsck`。NERO URDF/mesh 由 Git LFS 提供，任务物体
+和背景资产则通过以下命令下载；路径生成导致本机 `curobo.yml` 显示为修改是正常现象：
+
+```bash
+conda activate RoboTwin5090
+bash script/_download_assets.sh
 ```
 
 RoboTwin 的 NERO 资产位于 `assets/embodiments/nero`。其中 URDF 的关节链保持一致，

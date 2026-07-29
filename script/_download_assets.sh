@@ -1,18 +1,17 @@
-cd assets
-python _download.py
+#!/usr/bin/env bash
+set -euo pipefail
 
-# background_texture
-unzip background_texture.zip
-rm -rf background_texture.zip
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHON_BIN="${ROBOTWIN_PYTHON:-python}"
 
-# embodiments
-unzip embodiments.zip
-rm -rf embodiments.zip
+cd "${ROOT}/assets"
+"${PYTHON_BIN}" _download.py
 
-# objects
-unzip objects.zip
-rm -rf objects.zip
+unzip -o background_texture.zip
+unzip -o embodiments.zip
+unzip -o objects.zip
+rm -f background_texture.zip embodiments.zip objects.zip
 
-cd ..
-echo "Configuring Path ..."
-python ./script/update_embodiment_config_path.py
+cd "${ROOT}"
+echo "Configuring embodiment asset paths ..."
+"${PYTHON_BIN}" script/update_embodiment_config_path.py

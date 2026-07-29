@@ -8,14 +8,17 @@ dependencies:
   - pip
   - ffmpeg
   - pip:
-      - torch
-      - torchvision
-      - transformers
-      - safetensors
-      - datasets
-      - draccus
-      - grpcio
-      - protobuf
-      - pyarrow
-      - opencv-python-headless
-      - av
+      # Versions verified by the bundled PI0.5 runtime on RTX 5090.
+      - torch==2.11.0
+      - torchvision==0.26.0
+      - transformers==5.5.4
+      - safetensors==0.7.0
+      - datasets==4.8.5
+      - draccus==0.10.0
+      - grpcio==1.73.1
+      - protobuf==6.31.1
+      - pyarrow==24.0.0
+      - opencv-python-headless==4.13.0.92
+      - av==15.1.0
+      - h5py==3.16.0
+      - pytest
