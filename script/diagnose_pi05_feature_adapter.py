@@ -32,6 +32,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-stride", type=int, default=30)
     parser.add_argument("--max-samples", type=int, default=30)
     parser.add_argument("--flow-timestep", type=float, default=0.5)
+    parser.add_argument(
+        "--action-chunk-steps",
+        type=int,
+        default=10,
+        help="Fixed-noise flow integration steps for the full action-chunk diagnostic.",
+    )
     parser.add_argument("--seed", type=int, default=123)
     return parser.parse_args()
 
@@ -109,6 +115,8 @@ def main() -> None:
             "velocity_mse_adapted": [],
             "flow_mse_raw": [],
             "flow_mse_adapted": [],
+            "action_chunk_mse_raw": [],
+            "action_chunk_mse_adapted": [],
             "delta_z_rms": [],
         }
         for view in views
@@ -116,6 +124,7 @@ def main() -> None:
     c0_metrics = {
         "feature_cosine": [],
         "velocity_mse": [],
+        "action_chunk_mse": [],
         "delta_z_rms": [],
     }
     records = []
@@ -144,6 +153,16 @@ def main() -> None:
                 apply_feature_adapter=False,
                 return_image_features=True,
             )
+            teacher_action_chunk = policy.model.sample_actions(
+                canonical_images,
+                canonical_masks,
+                tokens,
+                masks,
+                noise=noise,
+                num_steps=args.action_chunk_steps,
+                image_keys=image_keys,
+                apply_feature_adapter=False,
+            )
             c0_velocity, _, c0_features = policy.model.predict_velocity(
                 canonical_images,
                 canonical_masks,
@@ -156,12 +175,23 @@ def main() -> None:
                 apply_feature_adapter=True,
                 return_image_features=True,
             )
+            c0_action_chunk = policy.model.sample_actions(
+                canonical_images,
+                canonical_masks,
+                tokens,
+                masks,
+                noise=noise,
+                num_steps=args.action_chunk_steps,
+                image_keys=image_keys,
+                apply_feature_adapter=True,
+            )
             teacher_tokens = teacher_features[FRONT_KEY]["raw"]
             c0_aligned = c0_features[FRONT_KEY]["aligned"]
             c0_delta = c0_features[FRONT_KEY]["delta"]
             c0_record = {
                 "feature_cosine": global_cosine(c0_aligned, teacher_tokens),
                 "velocity_mse": mse(c0_velocity, teacher_velocity),
+                "action_chunk_mse": mse(c0_action_chunk, teacher_action_chunk),
                 "delta_z_rms": rms(c0_delta),
             }
             for name, value in c0_record.items():
@@ -184,6 +214,16 @@ def main() -> None:
                     apply_feature_adapter=False,
                     return_image_features=True,
                 )
+                raw_action_chunk = policy.model.sample_actions(
+                    shifted_images,
+                    shifted_masks,
+                    tokens,
+                    masks,
+                    noise=noise,
+                    num_steps=args.action_chunk_steps,
+                    image_keys=shifted_keys,
+                    apply_feature_adapter=False,
+                )
                 adapted_velocity, adapted_flow_target, adapted_features = policy.model.predict_velocity(
                     shifted_images,
                     shifted_masks,
@@ -195,6 +235,16 @@ def main() -> None:
                     image_keys=shifted_keys,
                     apply_feature_adapter=True,
                     return_image_features=True,
+                )
+                adapted_action_chunk = policy.model.sample_actions(
+                    shifted_images,
+                    shifted_masks,
+                    tokens,
+                    masks,
+                    noise=noise,
+                    num_steps=args.action_chunk_steps,
+                    image_keys=shifted_keys,
+                    apply_feature_adapter=True,
                 )
                 if not torch.equal(flow_target, adapted_flow_target):
                     raise RuntimeError("Canonical and shifted flow targets differ")
@@ -208,6 +258,8 @@ def main() -> None:
                     "velocity_mse_adapted": mse(adapted_velocity, teacher_velocity),
                     "flow_mse_raw": mse(raw_velocity, flow_target),
                     "flow_mse_adapted": mse(adapted_velocity, flow_target),
+                    "action_chunk_mse_raw": mse(raw_action_chunk, teacher_action_chunk),
+                    "action_chunk_mse_adapted": mse(adapted_action_chunk, teacher_action_chunk),
                     "delta_z_rms": rms(delta_tokens),
                 }
                 for name, value in record.items():
@@ -231,6 +283,7 @@ def main() -> None:
         "frame_stride": args.frame_stride,
         "samples_per_view": len(indices),
         "flow_timestep": args.flow_timestep,
+        "action_chunk_steps": args.action_chunk_steps,
         "c0_identity": {name: scalar_metrics(values) for name, values in c0_metrics.items()},
         "per_view": {},
     }
@@ -244,6 +297,14 @@ def main() -> None:
         )
         view_summary["flow_mse_improvement"] = scalar_metrics(
             [raw - adapted for raw, adapted in zip(metrics["flow_mse_raw"], metrics["flow_mse_adapted"])]
+        )
+        view_summary["action_chunk_mse_improvement"] = scalar_metrics(
+            [
+                raw - adapted
+                for raw, adapted in zip(
+                    metrics["action_chunk_mse_raw"], metrics["action_chunk_mse_adapted"]
+                )
+            ]
         )
         summary["per_view"][view] = view_summary
 

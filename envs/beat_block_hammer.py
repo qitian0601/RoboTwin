@@ -7,6 +7,18 @@ from ._GLOBAL_CONFIGS import *
 class beat_block_hammer(Base_Task):
 
     def setup_demo(self, **kwags):
+        self.balance_arms = bool(kwags.get("balance_arms", False))
+        self.grasp_hold_s = float(kwags.get("grasp_hold_s", 0.4))
+        self.final_hold_s = float(kwags.get("final_hold_s", 0.5))
+        self.success_hold_s = float(kwags.get("success_hold_s", 0.4))
+        self.initial_lift_m = float(kwags.get("initial_lift_m", 0.03))
+        self.success_max_linear_velocity = float(
+            kwags.get("success_max_linear_velocity_m_s", 0.08)
+        )
+        self.success_max_angular_velocity = float(
+            kwags.get("success_max_angular_velocity_rad_s", 1.5)
+        )
+        self._success_stable_steps = 0
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
@@ -18,8 +30,17 @@ class beat_block_hammer(Base_Task):
             convex=True,
             model_id=0,
         )
+        if self.balance_arms:
+            desired_arm = "left" if self.ep_num % 2 == 0 else "right"
+            block_xlim = (
+                [table_x - 0.25, table_x - 0.06]
+                if desired_arm == "left"
+                else [table_x + 0.06, table_x + 0.25]
+            )
+        else:
+            block_xlim = [table_x - 0.25, table_x + 0.25]
         block_pose = rand_pose(
-            xlim=[table_x - 0.25, table_x + 0.25],
+            xlim=block_xlim,
             ylim=[table_y - 0.05, table_y + 0.15],
             zlim=[0.76],
             qpos=[1, 0, 0, 0],
@@ -31,7 +52,7 @@ class beat_block_hammer(Base_Task):
             or np.sum(np.square(block_pose.p[:2] - np.array([table_x, table_y]))) < 0.001
         ):
             block_pose = rand_pose(
-                xlim=[table_x - 0.25, table_x + 0.25],
+                xlim=block_xlim,
                 ylim=[table_y - 0.05, table_y + 0.15],
                 zlim=[0.76],
                 qpos=[1, 0, 0, 0],
@@ -65,8 +86,20 @@ class beat_block_hammer(Base_Task):
 
         # Grasp the hammer with the selected arm
         self.move(self.grasp_actor(self.hammer, arm_tag=arm_tag, pre_grasp_dis=0.12, grasp_dis=0.0))
-        # Move the hammer upwards
-        self.move(self.move_by_displacement(arm_tag, z=0.07, move_axis="arm"))
+        self.hold_current_pose(self.grasp_hold_s)
+
+        initial_height = self.hammer.get_pose().p[2]
+        # The original task used ``move_axis="arm"`` here. In RoboTwin that
+        # means moving along the gripper's local grasp axis, not vertically,
+        # despite the original "move upwards" comment. Lift in world Z so the
+        # hammer actually clears the table and the retention check is useful.
+        self.move(self.move_by_displacement(arm_tag, z=self.initial_lift_m, move_axis="world"))
+        if self.need_plan and self.hammer.get_pose().p[2] < initial_height + 0.01:
+            self.plan_success = False
+
+        remaining_lift = max(0.0, 0.07 - self.initial_lift_m)
+        if self.plan_success and remaining_lift > 0:
+            self.move(self.move_by_displacement(arm_tag, z=remaining_lift, move_axis="world"))
 
         # Place the hammer on the block's functional point (position 1)
         self.move(
@@ -79,13 +112,48 @@ class beat_block_hammer(Base_Task):
                 dis=0,
                 is_open=False,
             ))
+        self.hold_current_pose(self.final_hold_s)
 
         self.info["info"] = {"{A}": "020_hammer/base0", "{a}": str(arm_tag)}
         return self.info
 
-    def check_success(self):
+    def _hammer_is_stable(self):
+        dynamic = next(
+            (
+                component
+                for component in self.hammer.actor.get_components()
+                if isinstance(component, sapien.physx.PhysxRigidDynamicComponent)
+            ),
+            None,
+        )
+        if dynamic is None:
+            return False
+        return (
+            np.linalg.norm(dynamic.get_linear_velocity())
+            <= self.success_max_linear_velocity
+            and np.linalg.norm(dynamic.get_angular_velocity())
+            <= self.success_max_angular_velocity
+        )
+
+    def _success_conditions_met(self):
         hammer_target_pose = self.hammer.get_functional_point(0, "pose").p
         block_pose = self.block.get_functional_point(1, "pose").p
         eps = np.array([0.02, 0.02])
-        return np.all(abs(hammer_target_pose[:2] - block_pose[:2]) < eps) and self.check_actors_contact(
-            self.hammer.get_name(), self.block.get_name())
+        return (
+            np.all(abs(hammer_target_pose[:2] - block_pose[:2]) < eps)
+            and self.check_actors_contact(self.hammer.get_name(), self.block.get_name())
+            and self._hammer_is_stable()
+        )
+
+    def _step_scene(self):
+        super()._step_scene()
+        if not hasattr(self, "hammer") or not hasattr(self, "block"):
+            return
+        if self._success_conditions_met():
+            self._success_stable_steps += 1
+        else:
+            self._success_stable_steps = 0
+
+    def check_success(self):
+        required_steps = max(1, round(self.success_hold_s / self.sim_timestep))
+        return self._success_stable_steps >= required_steps

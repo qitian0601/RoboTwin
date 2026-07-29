@@ -170,6 +170,11 @@ def main(task_name=None, task_config=None):
     if collection_seed_start:
         args["seed_start"] = int(collection_seed_start)
         print(f"Collection seed start override: {args['seed_start']}")
+    collection_episode_num = os.environ.get("ROBOTWIN_COLLECTION_EPISODE_NUM")
+    if collection_episode_num:
+        args["episode_num"] = int(collection_episode_num)
+        args["append_episode_on_run"] = False
+        print(f"Collection episode count override: {args['episode_num']}")
     run(task, args)
 
 

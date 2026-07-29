@@ -10,6 +10,7 @@ import os
 import random
 import shutil
 from collections import OrderedDict
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -47,6 +48,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--adapter-checkpoint", type=Path)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the newest complete step_*/train_state.pt inside --output.",
+    )
+    parser.add_argument(
+        "--adapter-variant",
+        choices=(
+            "legacy",
+            "pure_teacher_gated_residual",
+            "multi_scale_dynamic",
+            "image_routed_moe",
+        ),
+        default="legacy",
+    )
+    parser.add_argument("--adapter-num-experts", type=int, default=4)
+    parser.add_argument(
+        "--pose-enabled",
+        action="store_true",
+        help="Enable the optional 9D pose conditioner. Leave off for image-only training/inference.",
+    )
     parser.add_argument("--flow-loss-weight", type=float, default=0.05)
     parser.add_argument("--velocity-loss-weight", type=float, default=1.0)
     parser.add_argument("--global-feature-loss-weight", type=float, default=0.05)
@@ -153,15 +175,115 @@ def preprocess_sample(preprocessor, sample: dict) -> dict[str, torch.Tensor]:
     return processed
 
 
+def newest_resume_checkpoint(output: Path) -> tuple[int, Path, dict] | None:
+    candidates: list[tuple[int, Path]] = []
+    for path in output.glob("step_*"):
+        if not path.is_dir() or not (path / "train_state.pt").is_file():
+            continue
+        try:
+            step = int(path.name.removeprefix("step_"))
+        except ValueError:
+            continue
+        candidates.append((step, path))
+    if not candidates:
+        return None
+    for step, checkpoint in sorted(candidates, reverse=True):
+        required_adapter_files = (
+            checkpoint / "adapter_model.safetensors",
+            checkpoint / "adapter_config.json",
+        )
+        if not all(path.is_file() for path in required_adapter_files):
+            print(f"Ignoring incomplete Adapter checkpoint: {checkpoint}")
+            continue
+        try:
+            state = torch.load(
+                checkpoint / "train_state.pt", map_location="cpu", weights_only=False
+            )
+        except Exception as error:
+            print(
+                f"Ignoring unreadable Adapter resume state {checkpoint}: "
+                f"{type(error).__name__}: {error}"
+            )
+            continue
+        if int(state.get("step", -1)) != step:
+            print(f"Ignoring step-mismatched Adapter checkpoint: {checkpoint}")
+            continue
+        return step, checkpoint, state
+    return None
+
+
+def training_signature(args: argparse.Namespace, base_checkpoint: Path) -> dict:
+    return {
+        "base_checkpoint": str(base_checkpoint),
+        "cache_index": str(args.cache_index.expanduser().resolve()),
+        "shifted_views": args.shifted_views,
+        "seed": args.seed,
+        "adapter_variant": args.adapter_variant,
+        "adapter_num_experts": args.adapter_num_experts,
+        "pose_enabled": args.pose_enabled,
+        "pose_dim": 9,
+        "frame_stride": args.frame_stride,
+        "batch_size": args.batch_size,
+        "learning_rate": args.learning_rate,
+        "weight_decay": args.weight_decay,
+        "loss_weights": {
+            "feature_adapter_flow_loss_weight": args.flow_loss_weight,
+            "feature_adapter_velocity_loss_weight": args.velocity_loss_weight,
+            "feature_adapter_global_feature_loss_weight": args.global_feature_loss_weight,
+            "feature_adapter_canonical_identity_loss_weight": args.canonical_identity_loss_weight,
+            "feature_adapter_canonical_velocity_loss_weight": args.canonical_velocity_loss_weight,
+            "feature_adapter_residual_loss_weight": args.residual_loss_weight,
+        },
+    }
+
+
+def save_training_checkpoint(
+    policy: PI05Policy,
+    optimizer: torch.optim.Optimizer,
+    dataset: PairedMultiviewDataset,
+    loader_generator: torch.Generator,
+    output: Path,
+    step: int,
+    signature: dict,
+) -> Path:
+    checkpoint = output / f"step_{step:06d}"
+    if checkpoint.exists():
+        raise FileExistsError(f"Refusing to overwrite existing checkpoint: {checkpoint}")
+    staging = output / f".step_{step:06d}.{os.getpid()}.tmp"
+    if staging.exists():
+        raise FileExistsError(f"Refusing to reuse checkpoint staging directory: {staging}")
+    policy.save_feature_adapter(staging)
+    state = {
+        "format": "pi05_feature_adapter_train_state_v2",
+        "step": step,
+        "signature": signature,
+        "optimizer": optimizer.state_dict(),
+        "python_random_state": random.getstate(),
+        "numpy_random_state": np.random.get_state(),
+        "torch_rng_state": torch.get_rng_state(),
+        "cuda_rng_state": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        "dataset_rng_state": dataset.rng.getstate(),
+        "loader_generator_state": loader_generator.get_state(),
+    }
+    state_staging = staging / ".train_state.pt.tmp"
+    torch.save(state, state_staging)
+    os.replace(state_staging, staging / "train_state.pt")
+    staging.rename(checkpoint)
+    return checkpoint
+
+
 def make_deployment_checkpoint(base: Path, adapter: Path, output: Path, policy_config) -> Path:
     deployment = output / "deployment_checkpoint"
-    deployment.mkdir(parents=True, exist_ok=True)
+    if deployment.exists() or deployment.is_symlink():
+        raise FileExistsError(f"Refusing to overwrite existing deployment: {deployment}")
+    staging = output / f".deployment_checkpoint.{os.getpid()}.tmp"
+    if staging.exists():
+        raise FileExistsError(f"Refusing to reuse deployment staging directory: {staging}")
+    staging.mkdir(parents=True)
     for source in base.iterdir():
         if source.name == "config.json":
             continue
-        destination = deployment / source.name
-        if destination.exists() or destination.is_symlink():
-            destination.unlink()
+        destination = staging / source.name
         destination.symlink_to(source.resolve())
     with (base / "config.json").open(encoding="utf-8") as config_file:
         config = json.load(config_file)
@@ -169,8 +291,14 @@ def make_deployment_checkpoint(base: Path, adapter: Path, output: Path, policy_c
         {
             "use_feature_adapter": True,
             "feature_adapter_camera_keys": [CAMERA_KEYS["front"]],
-            "feature_adapter_bottleneck_dim": 256,
-            "feature_adapter_num_heads": 8,
+            "feature_adapter_variant": policy_config.feature_adapter_variant,
+            "feature_adapter_bottleneck_dim": policy_config.feature_adapter_bottleneck_dim,
+            "feature_adapter_num_heads": policy_config.feature_adapter_num_heads,
+            "feature_adapter_num_blocks": policy_config.feature_adapter_num_blocks,
+            "feature_adapter_ffn_expansion": policy_config.feature_adapter_ffn_expansion,
+            "feature_adapter_num_experts": policy_config.feature_adapter_num_experts,
+            "feature_adapter_pose_enabled": policy_config.feature_adapter_pose_enabled,
+            "feature_adapter_pose_dim": policy_config.feature_adapter_pose_dim,
             "feature_adapter_checkpoint": "feature_adapter",
             "feature_adapter_flow_loss_weight": policy_config.feature_adapter_flow_loss_weight,
             "feature_adapter_velocity_loss_weight": policy_config.feature_adapter_velocity_loss_weight,
@@ -184,28 +312,57 @@ def make_deployment_checkpoint(base: Path, adapter: Path, output: Path, policy_c
             "feature_adapter_residual_loss_weight": policy_config.feature_adapter_residual_loss_weight,
         }
     )
-    with (deployment / "config.json").open("w", encoding="utf-8") as config_file:
+    with (staging / "config.json").open("w", encoding="utf-8") as config_file:
         json.dump(config, config_file, indent=2)
         config_file.write("\n")
-    destination_adapter = deployment / "feature_adapter"
-    destination_adapter.mkdir(exist_ok=True)
+    destination_adapter = staging / "feature_adapter"
+    destination_adapter.mkdir()
     for source in adapter.iterdir():
-        shutil.copy2(source, destination_adapter / source.name)
+        if source.name in {"adapter_model.safetensors", "adapter_config.json"}:
+            shutil.copy2(source, destination_adapter / source.name)
+    staging.rename(deployment)
     return deployment
 
 
 def main() -> None:
     args = parse_args()
+    if args.resume and args.adapter_checkpoint is not None:
+        raise ValueError("--resume and --adapter-checkpoint are mutually exclusive")
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    args.output.mkdir(parents=True, exist_ok=True)
 
     base_checkpoint = args.base_checkpoint.expanduser().resolve()
+    args.output = args.output.expanduser().resolve()
+    signature = training_signature(args, base_checkpoint)
+    resume_info = None
+    if args.resume:
+        if not args.output.is_dir():
+            raise FileNotFoundError(f"Resume output directory does not exist: {args.output}")
+        resume_info = newest_resume_checkpoint(args.output)
+        if resume_info is None:
+            raise FileNotFoundError(f"No complete step_*/train_state.pt found in {args.output}")
+        resume_step, resume_checkpoint, resume_state = resume_info
+        if resume_state.get("signature") != signature:
+            raise RuntimeError(
+                "Resume configuration differs from the saved training signature:\n"
+                f"saved={json.dumps(resume_state.get('signature'), sort_keys=True)}\n"
+                f"current={json.dumps(signature, sort_keys=True)}"
+            )
+        args.adapter_checkpoint = resume_checkpoint
+    else:
+        if args.output.exists():
+            raise FileExistsError(f"Refusing to reuse or overwrite output directory: {args.output}")
+        args.output.mkdir(parents=True)
+
     config = PreTrainedConfig.from_pretrained(base_checkpoint)
     config.device = args.device
     config.use_feature_adapter = True
     config.feature_adapter_camera_keys = [CAMERA_KEYS["front"]]
+    config.feature_adapter_variant = args.adapter_variant
+    config.feature_adapter_num_experts = args.adapter_num_experts
+    config.feature_adapter_pose_enabled = args.pose_enabled
+    config.feature_adapter_pose_dim = 9
     config.feature_adapter_checkpoint = None
     loss_weights = {
         "feature_adapter_flow_loss_weight": args.flow_loss_weight,
@@ -226,19 +383,20 @@ def main() -> None:
     total_count = sum(parameter.numel() for parameter in policy.parameters())
     print(f"Trainable Adapter parameters: {trainable_count:,} / {total_count:,}")
     print(f"Adapter loss weights: {json.dumps(loss_weights, sort_keys=True)}")
-    with (args.output / "training_config.json").open("w", encoding="utf-8") as config_file:
-        json.dump(
+    training_config_path = args.output / "training_config.json"
+    if not args.resume:
+        training_record = dict(signature)
+        training_record.update(
             {
-                "base_checkpoint": str(base_checkpoint),
-                "cache_index": str(args.cache_index.expanduser().resolve()),
-                "shifted_views": args.shifted_views,
-                "seed": args.seed,
-                "loss_weights": loss_weights,
-            },
-            config_file,
-            indent=2,
+                "max_steps": args.max_steps,
+                "save_every": args.save_every,
+                "log_every": args.log_every,
+                "grad_clip_norm": args.grad_clip_norm,
+            }
         )
-        config_file.write("\n")
+        with training_config_path.open("x", encoding="utf-8") as config_file:
+            json.dump(training_record, config_file, indent=2)
+            config_file.write("\n")
 
     preprocessor, _ = make_pre_post_processors(
         config,
@@ -251,22 +409,54 @@ def main() -> None:
         args.frame_stride,
         args.seed,
     )
+    loader_generator = torch.Generator().manual_seed(args.seed)
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=0,
         collate_fn=lambda items: items,
-        generator=torch.Generator().manual_seed(args.seed),
+        generator=loader_generator,
     )
     optimizer = torch.optim.AdamW(
         policy.feature_adapter.parameters(),
         lr=args.learning_rate,
         weight_decay=args.weight_decay,
     )
-    log_path = args.output / "train_metrics.jsonl"
-
     step = 0
+    if resume_info is not None:
+        step, resume_checkpoint, resume_state = resume_info
+        optimizer.load_state_dict(resume_state["optimizer"])
+        random.setstate(resume_state["python_random_state"])
+        np.random.set_state(resume_state["numpy_random_state"])
+        torch.set_rng_state(resume_state["torch_rng_state"])
+        cuda_state = resume_state.get("cuda_rng_state")
+        if cuda_state is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(cuda_state)
+        dataset.rng.setstate(resume_state["dataset_rng_state"])
+        loader_generator.set_state(resume_state["loader_generator_state"])
+        if step > args.max_steps:
+            raise ValueError(
+                f"Resume checkpoint step {step} exceeds requested max steps {args.max_steps}"
+            )
+        print(f"Resumed Adapter training from step {step}: {resume_checkpoint}")
+        segment = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = args.output / f"train_metrics_resume_from_{step:06d}_{segment}.jsonl"
+        with (args.output / "resume_events.jsonl").open("a", encoding="utf-8") as event_file:
+            event_file.write(
+                json.dumps(
+                    {
+                        "resumed_at": datetime.now().astimezone().isoformat(),
+                        "checkpoint": str(resume_checkpoint),
+                        "step": step,
+                        "metrics_segment": str(log_path),
+                    }
+                )
+                + "\n"
+            )
+    else:
+        log_path = args.output / "train_metrics.jsonl"
+
     while step < args.max_steps:
         for raw_samples in loader:
             canonical = stack_processed(
@@ -301,13 +491,26 @@ def main() -> None:
             if step == 1 or step % args.log_every == 0:
                 print(json.dumps(record))
             if step % args.save_every == 0 or step == args.max_steps:
-                checkpoint = policy.save_feature_adapter(args.output / f"step_{step:06d}")
-                make_deployment_checkpoint(base_checkpoint, checkpoint, args.output, config)
+                save_training_checkpoint(
+                    policy,
+                    optimizer,
+                    dataset,
+                    loader_generator,
+                    args.output,
+                    step,
+                    signature,
+                )
             if step >= args.max_steps:
                 break
 
-    final_checkpoint = policy.save_feature_adapter(args.output / "feature_adapter")
+    final_checkpoint = args.output / f"step_{step:06d}"
+    if not (final_checkpoint / "adapter_model.safetensors").is_file():
+        raise RuntimeError(f"Final Adapter checkpoint is incomplete: {final_checkpoint}")
     deployment = make_deployment_checkpoint(base_checkpoint, final_checkpoint, args.output, config)
+    final_link = args.output / "feature_adapter"
+    if final_link.exists() or final_link.is_symlink():
+        raise FileExistsError(f"Refusing to overwrite final Adapter link: {final_link}")
+    final_link.symlink_to(final_checkpoint.name, target_is_directory=True)
     print(f"Adapter checkpoint: {final_checkpoint}")
     print(f"Inference checkpoint: {deployment}")
 

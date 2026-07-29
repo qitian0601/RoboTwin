@@ -130,13 +130,15 @@ def build_manifest(
         tasks = row["tasks"]
         if len(tasks) != 1:
             raise ValueError(f"Episode {episode_id} must have one task, got {tasks}")
-        source_instruction = load_json(source_root / "instructions" / f"episode{episode_id}.json")
-        available_instructions = source_instruction.get("seen", []) + source_instruction.get("unseen", [])
         instruction = str(tasks[0]).strip()
-        if instruction not in {str(value).strip() for value in available_instructions}:
-            raise ValueError(
-                f"Template/source instruction mismatch for episode {episode_id}: {instruction!r}"
-            )
+        source_instruction_path = source_root / "instructions" / f"episode{episode_id}.json"
+        if source_instruction_path.exists():
+            source_instruction = load_json(source_instruction_path)
+            available_instructions = source_instruction.get("seen", []) + source_instruction.get("unseen", [])
+            if instruction not in {str(value).strip() for value in available_instructions}:
+                raise ValueError(
+                    f"Template/source instruction mismatch for episode {episode_id}: {instruction!r}"
+                )
         records.append(
             {
                 "dataset_index": episode_id,
@@ -420,13 +422,17 @@ def replay_episode(
             f"output_frames={len(mapping)} state_max_error={state_max_error:.6f}"
         )
 
+        source_instruction_path = source_root / "instructions" / f"episode{episode_id}.json"
+        source_instruction = (
+            load_json(source_instruction_path)
+            if source_instruction_path.exists()
+            else {"seen": [record["instruction"]], "unseen": []}
+        )
         write_json(
             destination / "instruction.json",
             {
                 "language_instruction": record["instruction"],
-                "source_instruction": load_json(
-                    source_root / "instructions" / f"episode{episode_id}.json"
-                ),
+                "source_instruction": source_instruction,
             },
         )
         digest = hashlib.sha256((destination / "data.hdf5").read_bytes()).hexdigest()
@@ -478,6 +484,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-duration", type=float, default=20.0)
     parser.add_argument("--gripper-max-width", type=float, default=DEFAULT_GRIPPER_MAX_WIDTH_M)
     parser.add_argument("--crf", type=int, default=20)
+    parser.add_argument("--success-hold-s", type=float)
+    parser.add_argument("--success-max-linear-velocity", type=float)
+    parser.add_argument("--success-max-angular-velocity", type=float)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
@@ -527,6 +536,12 @@ def main() -> None:
         return
 
     base_args = load_task_args(cli.task_config, cli.task_name)
+    if cli.success_hold_s is not None:
+        base_args["success_hold_s"] = cli.success_hold_s
+    if cli.success_max_linear_velocity is not None:
+        base_args["success_max_linear_velocity_m_s"] = cli.success_max_linear_velocity
+    if cli.success_max_angular_velocity is not None:
+        base_args["success_max_angular_velocity_rad_s"] = cli.success_max_angular_velocity
     for record in manifest["episodes"]:
         if selected_ids is not None and record["source_episode"] not in selected_ids:
             continue

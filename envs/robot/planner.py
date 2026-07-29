@@ -35,6 +35,7 @@ try:
             active_joints_name,
             all_joints,
             yml_path=None,
+            time_dilation_factor=1.0,
         ):
             super().__init__()
             ta.setup_logging("CRITICAL")  # hide logging
@@ -47,6 +48,12 @@ try:
             self.robot_origion_pose = robot_origion_pose
             self.active_joints_name = active_joints_name
             self.all_joints = all_joints
+            self.time_dilation_factor = float(time_dilation_factor)
+            if not 0.0 < self.time_dilation_factor <= 1.0:
+                raise ValueError(
+                    "time_dilation_factor must be in (0, 1], got "
+                    f"{self.time_dilation_factor}"
+                )
 
             # translate from baselink to arm's base
             with open(self.yml_path, "r") as f:
@@ -90,6 +97,13 @@ try:
             self.motion_gen_batch = MotionGen(motion_gen_config)
             self.motion_gen_batch.warmup(batch=CONFIGS.ROTATE_NUM)
 
+        def _plan_config(self):
+            factor = self.time_dilation_factor
+            return MotionGenPlanConfig(
+                max_attempts=10,
+                time_dilation_factor=None if factor == 1.0 else factor,
+            )
+
         def plan_path(
             self,
             curr_joint_pos,
@@ -132,7 +146,7 @@ try:
                 joint_names=self.active_joints_name,
             )
             # plan
-            plan_config = MotionGenPlanConfig(max_attempts=10)
+            plan_config = self._plan_config()
             if constraint_pose is not None:
                 pose_cost_metric = PoseCostMetric(
                     hold_partial_pose=True,
@@ -216,7 +230,8 @@ try:
             joint_angles_cuda = (torch.tensor(joint_angles, dtype=torch.float32).cuda().reshape(1, -1))
             joint_angles_cuda = torch.cat([joint_angles_cuda] * num_poses, dim=0)
             start_joint_states = JointState.from_position(joint_angles_cuda, joint_names=self.active_joints_name)
-            # plan
+            # plan. Batch planning only chooses a feasible grasp pose; cuRobo's
+            # batch result path cannot be time-dilated in this version.
             plan_config = MotionGenPlanConfig(max_attempts=10)
             if constraint_pose is not None:
                 pose_cost_metric = PoseCostMetric(

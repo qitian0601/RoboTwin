@@ -58,7 +58,7 @@ from lerobot.utils.constants import (
 from ..pretrained import PreTrainedPolicy, T
 from ..rtc.modeling_rtc import RTCProcessor
 from .configuration_pi05 import DEFAULT_IMAGE_SIZE, PI05Config
-from .feature_adapter import ViewFeatureAdapter, global_feature_cosine_loss, weighted_mean
+from .feature_adapter import ViewFeatureAdapter, build_feature_adapter, global_feature_cosine_loss, weighted_mean
 
 
 class ActionSelectKwargs(TypedDict, total=False):
@@ -595,10 +595,16 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         self.feature_adapter = None
         if config.use_feature_adapter:
-            self.feature_adapter = ViewFeatureAdapter(
+            self.feature_adapter = build_feature_adapter(
+                variant=config.feature_adapter_variant,
                 token_dim=paligemma_config.width,
                 bottleneck_dim=min(config.feature_adapter_bottleneck_dim, paligemma_config.width // 4),
                 num_heads=config.feature_adapter_num_heads,
+                num_blocks=config.feature_adapter_num_blocks,
+                ffn_expansion=config.feature_adapter_ffn_expansion,
+                num_experts=config.feature_adapter_num_experts,
+                pose_enabled=config.feature_adapter_pose_enabled,
+                pose_dim=config.feature_adapter_pose_dim,
             )
         # This is a runtime switch, not a model-architecture switch. It lets a
         # known canonical camera bypass a loaded Adapter without changing its
@@ -675,6 +681,9 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         image_keys=None,
         apply_feature_adapter: bool | None = None,
         return_image_features: bool = False,
+        pose_condition: Tensor | None = None,
+        pose_valid_mask: Tensor | None = None,
+        pose_confidence: Tensor | None = None,
     ):
         """Embed images with SigLIP and language tokens with embedding layer."""
         embs = []
@@ -709,7 +718,12 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             if image_key in self.config.feature_adapter_camera_keys:
                 raw_tokens = img_emb
                 if adapter_enabled:
-                    img_emb, delta_tokens = self.feature_adapter.forward_with_delta(raw_tokens)
+                    img_emb, delta_tokens = self.feature_adapter.forward_with_delta(
+                        raw_tokens,
+                        pose_condition=pose_condition,
+                        pose_valid_mask=pose_valid_mask,
+                        pose_confidence=pose_confidence,
+                    )
                 if return_image_features:
                     if not adapter_enabled:
                         delta_tokens = torch.zeros_like(raw_tokens)
@@ -805,6 +819,9 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         image_keys=None,
         apply_feature_adapter: bool | None = None,
         return_image_features: bool = False,
+        pose_condition: Tensor | None = None,
+        pose_valid_mask: Tensor | None = None,
+        pose_confidence: Tensor | None = None,
     ):
         """Predict flow velocity for an explicitly supplied noise sample and timestep."""
         time_expanded = time[:, None, None]
@@ -819,6 +836,9 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             image_keys=image_keys,
             apply_feature_adapter=apply_feature_adapter,
             return_image_features=return_image_features,
+            pose_condition=pose_condition,
+            pose_valid_mask=pose_valid_mask,
+            pose_confidence=pose_confidence,
         )
         if return_image_features:
             prefix_embs, prefix_pad_masks, prefix_att_masks, image_features = prefix_outputs
@@ -904,6 +924,10 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         noise=None,
         num_steps=None,
         image_keys=None,
+        apply_feature_adapter: bool | None = None,
+        pose_condition: Tensor | None = None,
+        pose_valid_mask: Tensor | None = None,
+        pose_confidence: Tensor | None = None,
         **kwargs: Unpack[ActionSelectKwargs],
     ) -> Tensor:
         """Do a full inference forward and compute the action."""
@@ -923,7 +947,15 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             noise = self.sample_noise(actions_shape, device)
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
-            images, img_masks, tokens, masks, image_keys=image_keys
+            images,
+            img_masks,
+            tokens,
+            masks,
+            image_keys=image_keys,
+            apply_feature_adapter=apply_feature_adapter,
+            pose_condition=pose_condition,
+            pose_valid_mask=pose_valid_mask,
+            pose_confidence=pose_confidence,
         )
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
@@ -1454,6 +1486,9 @@ class PI05Policy(PreTrainedPolicy):
             image_keys=shifted_keys,
             apply_feature_adapter=True,
             return_image_features=True,
+            pose_condition=shifted_batch.get("pose_condition"),
+            pose_valid_mask=shifted_batch.get("pose_valid_mask"),
+            pose_confidence=shifted_batch.get("pose_confidence"),
         )
         canonical_velocity, canonical_flow_target, canonical_features = self.model.predict_velocity(
             canonical_images,
@@ -1466,6 +1501,9 @@ class PI05Policy(PreTrainedPolicy):
             image_keys=canonical_keys,
             apply_feature_adapter=True,
             return_image_features=True,
+            pose_condition=canonical_batch.get("pose_condition"),
+            pose_valid_mask=canonical_batch.get("pose_valid_mask"),
+            pose_confidence=canonical_batch.get("pose_confidence"),
         )
 
         original_action_dim = self.config.output_features[ACTION].shape[0]
@@ -1564,7 +1602,15 @@ class PI05Policy(PreTrainedPolicy):
 
         # Sample actions using the model (pass through RTC kwargs, no separate state needed for PI05)
         actions = self.model.sample_actions(
-            images, img_masks, tokens, masks, image_keys=image_keys, **kwargs
+            images,
+            img_masks,
+            tokens,
+            masks,
+            image_keys=image_keys,
+            pose_condition=batch.get("pose_condition"),
+            pose_valid_mask=batch.get("pose_valid_mask"),
+            pose_confidence=batch.get("pose_confidence"),
+            **kwargs,
         )
 
         # Unpad actions to actual action dimension

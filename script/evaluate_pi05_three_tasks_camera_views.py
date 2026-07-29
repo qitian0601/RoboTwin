@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -28,10 +30,7 @@ TASK_SPECS = (
     TaskSpec(
         "place_two_cubes_box",
         "demo_nero_two_cubes",
-        (
-            "Use the right arm to place the yellow cube into the black box, then use "
-            "the left arm to place the green cube into the black box."
-        ),
+        "Put the yellow cube into the black box first, then put the green cube into the black box.",
     ),
     TaskSpec(
         "pick_dual_bottles",
@@ -41,7 +40,7 @@ TASK_SPECS = (
     TaskSpec(
         "beat_block_hammer",
         "demo_nero_beat_block_hammer_c0",
-        "Pick up the hammer and strike the block.",
+        "Pick up the hammer with the right arm and strike the block.",
     ),
 )
 
@@ -59,6 +58,14 @@ def parse_args() -> argparse.Namespace:
         default=ROOT / "outputs" / "three_task_camera_view_eval",
     )
     parser.add_argument("--run-name")
+    parser.add_argument(
+        "--resume-existing",
+        action="store_true",
+        help=(
+            "Resume an interrupted --output-dir/--run-name. The immutable run "
+            "manifest and every task/view/episode checkpoint are validated before reuse."
+        ),
+    )
     parser.add_argument(
         "--scenario-seeds-from-run",
         type=Path,
@@ -97,9 +104,20 @@ def parse_args() -> argparse.Namespace:
 
 def write_manifest(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as manifest_file:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as manifest_file:
+        temporary = Path(manifest_file.name)
         json.dump(payload, manifest_file, ensure_ascii=False, indent=2)
         manifest_file.write("\n")
+        manifest_file.flush()
+        os.fsync(manifest_file.fileno())
+    os.replace(temporary, path)
 
 
 def write_aggregate_summary(run_dir: Path, task_results: list[dict]) -> None:
@@ -118,7 +136,17 @@ def write_aggregate_summary(run_dir: Path, task_results: list[dict]) -> None:
                 }
             )
 
-    with (run_dir / "summary.csv").open("w", newline="", encoding="utf-8") as csv_file:
+    summary_path = run_dir / "summary.csv"
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        newline="",
+        encoding="utf-8",
+        dir=run_dir,
+        prefix=".summary.",
+        suffix=".csv.tmp",
+        delete=False,
+    ) as csv_file:
+        temporary = Path(csv_file.name)
         writer = csv.DictWriter(
             csv_file,
             fieldnames=(
@@ -132,6 +160,9 @@ def write_aggregate_summary(run_dir: Path, task_results: list[dict]) -> None:
         )
         writer.writeheader()
         writer.writerows(rows)
+        csv_file.flush()
+        os.fsync(csv_file.fileno())
+    os.replace(temporary, summary_path)
 
     total_successes = sum(int(row["successes"]) for row in rows)
     total_episodes = sum(int(row["episodes"]) for row in rows)
@@ -162,9 +193,10 @@ def main() -> None:
     selected_specs = [spec for spec in TASK_SPECS if spec.name in selected_names]
     run_name = cli.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = cli.output_dir.expanduser().resolve() / run_name
-    run_dir.mkdir(parents=True, exist_ok=False)
+    if cli.resume_existing and cli.run_name is None:
+        raise ValueError("--resume-existing requires an explicit --run-name")
 
-    manifest = {
+    requested_manifest = {
         "policy_path": str(policy_path),
         "server_address": cli.server_address,
         "episodes_per_view": cli.episodes_per_view,
@@ -180,8 +212,37 @@ def main() -> None:
             else None
         ),
         "tasks": [spec.name for spec in selected_specs],
-        "task_runs": [],
     }
+    manifest_path = run_dir / "run_manifest.json"
+    if run_dir.exists():
+        if not cli.resume_existing:
+            raise FileExistsError(
+                f"Three-task run directory already exists; use --resume-existing: {run_dir}"
+            )
+        if manifest_path.is_file():
+            with manifest_path.open(encoding="utf-8") as manifest_file:
+                manifest = json.load(manifest_file)
+            if not isinstance(manifest, dict):
+                raise ValueError(f"Existing manifest is not a JSON object: {manifest_path}")
+            for field, requested in requested_manifest.items():
+                if manifest.get(field) != requested:
+                    raise ValueError(
+                        f"Resume manifest mismatch for {field}: "
+                        f"existing={manifest.get(field)!r}, requested={requested!r}"
+                    )
+            if not isinstance(manifest.get("task_runs", []), list):
+                raise ValueError("Existing task_runs must be a list")
+            manifest.setdefault("task_runs", [])
+        elif any(run_dir.iterdir()):
+            raise FileExistsError(
+                f"Refusing to resume a non-empty run without run_manifest.json: {run_dir}"
+            )
+        else:
+            manifest = {**requested_manifest, "resume_contract_version": 1, "task_runs": []}
+    else:
+        run_dir.mkdir(parents=True, exist_ok=False)
+        manifest = {**requested_manifest, "resume_contract_version": 1, "task_runs": []}
+    manifest["resume_contract_version"] = 1
     write_manifest(run_dir / "run_manifest.json", manifest)
 
     task_results: list[dict] = []
@@ -217,13 +278,18 @@ def main() -> None:
             "--video-preset",
             cli.video_preset,
         ]
+        if cli.resume_existing:
+            command.append("--resume-existing")
         if cli.policy_inference_seed is not None:
             command.extend(
                 ["--policy-inference-seed", str(cli.policy_inference_seed)]
             )
         if cli.view is not None:
             command.extend(["--view", cli.view])
-        if cli.scenario_seeds_from_run is not None:
+        current_results = task_dir / "results.json"
+        if cli.resume_existing and current_results.is_file():
+            command.extend(["--scenario-seeds-file", str(current_results)])
+        elif cli.scenario_seeds_from_run is not None:
             previous_results = (
                 cli.scenario_seeds_from_run.expanduser().resolve()
                 / task_spec.name
@@ -249,6 +315,7 @@ def main() -> None:
             "instruction": task_spec.instruction,
             "output_dir": str(task_dir),
             "returncode": completed.returncode,
+            "attempted_at": datetime.now().astimezone().isoformat(),
         }
         manifest["task_runs"].append(task_record)
         write_manifest(run_dir / "run_manifest.json", manifest)

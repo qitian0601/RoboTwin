@@ -19,9 +19,44 @@ class pick_dual_bottles(Base_Task):
                     "dual_bottle_contact_point_ids must contain exactly two contact IDs"
                 )
         self.dual_bottle_scale = float(kwags.get("dual_bottle_scale", 1.0))
+        self.dual_bottle_spawn_center_offsets = np.asarray(
+            kwags.get(
+                "dual_bottle_spawn_center_offsets",
+                [[-0.15, 0.13], [0.15, 0.13]],
+            ),
+            dtype=float,
+        )
+        if self.dual_bottle_spawn_center_offsets.shape != (2, 2):
+            raise ValueError(
+                "dual_bottle_spawn_center_offsets must contain two [x, y] offsets"
+            )
+        self.dual_bottle_spawn_half_range = np.asarray(
+            kwags.get("dual_bottle_spawn_half_range", [0.10, 0.10]),
+            dtype=float,
+        )
+        if self.dual_bottle_spawn_half_range.shape != (2,):
+            raise ValueError("dual_bottle_spawn_half_range must be [x, y]")
+        if np.any(self.dual_bottle_spawn_half_range < 0):
+            raise ValueError("dual_bottle_spawn_half_range values must be non-negative")
         self.dual_bottle_use_nero_contacts = bool(
             kwags.get("dual_bottle_use_nero_contacts", False)
         )
+        self.grasp_hold_s = float(kwags.get("grasp_hold_s", 0.4))
+        self.final_hold_s = float(kwags.get("final_hold_s", 0.5))
+        self.success_hold_s = float(kwags.get("success_hold_s", 0.5))
+        self.initial_lift_m = float(kwags.get("initial_lift_m", 0.03))
+        self.success_max_linear_velocity = float(
+            kwags.get("success_max_linear_velocity_m_s", 0.05)
+        )
+        self.success_max_angular_velocity = float(
+            kwags.get("success_max_angular_velocity_rad_s", 1.0)
+        )
+        self.eval_lift_success_height_m = kwags.get("eval_lift_success_height_m")
+        if self.eval_lift_success_height_m is not None:
+            self.eval_lift_success_height_m = float(self.eval_lift_success_height_m)
+            if self.eval_lift_success_height_m <= 0:
+                raise ValueError("eval_lift_success_height_m must be positive")
+        self._success_stable_steps = 0
         super()._init_task_env_(**kwags)
 
     def _use_nero_top_down_contacts(self, bottle):
@@ -48,10 +83,14 @@ class pick_dual_bottles(Base_Task):
 
     def load_actors(self):
         table_x, table_y = self.table_xy_bias
+        table_xy = np.asarray([table_x, table_y], dtype=float)
+        spawn_centers = table_xy + self.dual_bottle_spawn_center_offsets
+        half_x, half_y = self.dual_bottle_spawn_half_range
+
         self.bottle1 = rand_create_actor(
             self,
-            xlim=[table_x - 0.25, table_x - 0.05],
-            ylim=[table_y + 0.03, table_y + 0.23],
+            xlim=[spawn_centers[0, 0] - half_x, spawn_centers[0, 0] + half_x],
+            ylim=[spawn_centers[0, 1] - half_y, spawn_centers[0, 1] + half_y],
             modelname="001_bottle",
             rotate_rand=True,
             rotate_lim=[0, 1, 0],
@@ -63,8 +102,8 @@ class pick_dual_bottles(Base_Task):
 
         self.bottle2 = rand_create_actor(
             self,
-            xlim=[table_x + 0.05, table_x + 0.25],
-            ylim=[table_y + 0.03, table_y + 0.23],
+            xlim=[spawn_centers[1, 0] - half_x, spawn_centers[1, 0] + half_x],
+            ylim=[spawn_centers[1, 1] - half_y, spawn_centers[1, 1] + half_y],
             modelname="001_bottle",
             rotate_rand=True,
             rotate_lim=[0, 1, 0],
@@ -88,6 +127,10 @@ class pick_dual_bottles(Base_Task):
         self.prohibited_area.append(target_posi)
         self.left_target_pose = [table_x - 0.06, table_y - 0.105, 1, 0, 1, 0, 0]
         self.right_target_pose = [table_x + 0.06, table_y - 0.105, 1, 0, 1, 0, 0]
+        self._initial_functional_heights = (
+            float(self.bottle1.get_functional_point(0)[2]),
+            float(self.bottle2.get_functional_point(0)[2]),
+        )
 
     def play_once(self):
         # Determine which arm to use for each bottle based on their x-coordinate position
@@ -120,11 +163,30 @@ class pick_dual_bottles(Base_Task):
             ),
         )
 
-        # Simultaneously lift both bottles up by 0.1 meters
+        # This is real simulated time, unlike duplicated frames at action boundaries.
+        self.hold_current_pose(self.grasp_hold_s)
+
+        initial_heights = [self.bottle1.get_pose().p[2], self.bottle2.get_pose().p[2]]
+
+        # Start with a short, slow lift so fragile grasps fail before transport.
         self.move(
-            self.move_by_displacement(arm_tag=bottle1_arm_tag, z=0.1),
-            self.move_by_displacement(arm_tag=bottle2_arm_tag, z=0.1),
+            self.move_by_displacement(arm_tag=bottle1_arm_tag, z=self.initial_lift_m),
+            self.move_by_displacement(arm_tag=bottle2_arm_tag, z=self.initial_lift_m),
         )
+        if self.need_plan and not all(
+            bottle.get_pose().p[2] >= start_z + 0.01
+            for bottle, start_z in zip(
+                (self.bottle1, self.bottle2), initial_heights, strict=True
+            )
+        ):
+            self.plan_success = False
+
+        remaining_lift = max(0.0, 0.1 - self.initial_lift_m)
+        if self.plan_success and remaining_lift > 0:
+            self.move(
+                self.move_by_displacement(arm_tag=bottle1_arm_tag, z=remaining_lift),
+                self.move_by_displacement(arm_tag=bottle2_arm_tag, z=remaining_lift),
+            )
 
         # Simultaneously place both bottles at their target positions
         self.move(
@@ -147,6 +209,7 @@ class pick_dual_bottles(Base_Task):
                 is_open=False,
             ),
         )
+        self.hold_current_pose(self.final_hold_s)
 
         self.info["info"] = {
             "{A}": f"001_bottle/base{self.dual_bottle_model_ids[0]}",
@@ -154,14 +217,69 @@ class pick_dual_bottles(Base_Task):
         }
         return self.info
 
-    def check_success(self):
+    @staticmethod
+    def _actor_is_stable(actor, max_linear_velocity, max_angular_velocity):
+        dynamic = next(
+            (
+                component
+                for component in actor.actor.get_components()
+                if isinstance(component, sapien.physx.PhysxRigidDynamicComponent)
+            ),
+            None,
+        )
+        if dynamic is None:
+            return False
+        return (
+            np.linalg.norm(dynamic.get_linear_velocity()) <= max_linear_velocity
+            and np.linalg.norm(dynamic.get_angular_velocity()) <= max_angular_velocity
+        )
+
+    def _success_conditions_met(self):
         bottle1_target = self.left_target_pose[:2]
         bottle2_target = self.right_target_pose[:2]
         eps = 0.1
         bottle1_pose = self.bottle1.get_functional_point(0)
         bottle2_pose = self.bottle2.get_functional_point(0)
-        if bottle1_pose[2] < 0.78 or bottle2_pose[2] < 0.78:
-            self.actor_pose = False
-        return (abs(bottle1_pose[0] - bottle1_target[0]) < eps and abs(bottle1_pose[1] - bottle1_target[1]) < eps
-                and bottle1_pose[2] > 0.89 and abs(bottle2_pose[0] - bottle2_target[0]) < eps
-                and abs(bottle2_pose[1] - bottle2_target[1]) < eps and bottle2_pose[2] > 0.89)
+        if self.eval_lift_success_height_m is not None:
+            return (
+                bottle1_pose[2]
+                >= self._initial_functional_heights[0] + self.eval_lift_success_height_m
+                and bottle2_pose[2]
+                >= self._initial_functional_heights[1] + self.eval_lift_success_height_m
+            )
+        return (
+            abs(bottle1_pose[0] - bottle1_target[0]) < eps
+            and abs(bottle1_pose[1] - bottle1_target[1]) < eps
+            and bottle1_pose[2] > 0.89
+            and abs(bottle2_pose[0] - bottle2_target[0]) < eps
+            and abs(bottle2_pose[1] - bottle2_target[1]) < eps
+            and bottle2_pose[2] > 0.89
+            and self._actor_is_stable(
+                self.bottle1,
+                self.success_max_linear_velocity,
+                self.success_max_angular_velocity,
+            )
+            and self._actor_is_stable(
+                self.bottle2,
+                self.success_max_linear_velocity,
+                self.success_max_angular_velocity,
+            )
+        )
+
+    def _step_scene(self):
+        super()._step_scene()
+        if (
+            not hasattr(self, "bottle1")
+            or not hasattr(self, "bottle2")
+            or not hasattr(self, "left_target_pose")
+            or not hasattr(self, "right_target_pose")
+        ):
+            return
+        if self._success_conditions_met():
+            self._success_stable_steps += 1
+        else:
+            self._success_stable_steps = 0
+
+    def check_success(self):
+        required_steps = max(1, round(self.success_hold_s / self.sim_timestep))
+        return self._success_stable_steps >= required_steps

@@ -703,6 +703,25 @@ class Base_Task(gym.Env):
 
         self.render_freq = render_freq
 
+    def hold_current_pose(self, duration_s, save_freq=-1):
+        """Advance real physics time while the robot drive targets remain fixed."""
+        duration_s = float(duration_s)
+        if duration_s <= 0:
+            return
+        save_freq = self.save_freq if save_freq == -1 else save_freq
+        steps = max(1, round(duration_s / self.sim_timestep))
+        for step in range(1, steps + 1):
+            self._step_scene()
+            if self.render_freq and step % self.render_freq == 0:
+                self._update_render()
+                self.viewer.render()
+            if save_freq is not None and step % save_freq == 0:
+                self._update_render()
+                self._take_picture()
+        if save_freq is not None:
+            self._update_render()
+            self._take_picture()
+
     def set_gripper(self, set_tag="together", left_pos=None, right_pos=None):
         """
         Set gripper posture

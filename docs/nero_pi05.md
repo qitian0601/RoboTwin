@@ -98,6 +98,37 @@ python script/train_pi05_view_feature_adapter.py \
 多任务训练时，应把三任务 cache 合并后的 index 作为 `--cache-index`，不要误用单任务
 示例路径。训练会保存 adapter 权重和训练配置，但不会保存完整 PI0.5 base model。
 
+实验 runtime 支持以下 Adapter 结构：
+
+- `legacy`：兼容已有 teacher-first checkpoint；
+- `pure_teacher_gated_residual`：由全局图像上下文控制的残差 Adapter；
+- `multi_scale_dynamic`：动态融合多尺度空间特征；
+- `image_routed_moe`：按图像内容路由的多专家 Adapter。
+
+新实验应显式指定结构，并为每种结构使用独立输出目录。例如：
+
+```bash
+python script/train_pi05_view_feature_adapter.py \
+  --base-checkpoint /path/to/16d_pi05/pretrained_model \
+  --cache-index /path/to/merged_adapter_cache/train_index.json \
+  --adapter-variant image_routed_moe \
+  --adapter-num-experts 4 \
+  --output outputs/pi05_feature_adapter/image_routed_moe
+```
+
+训练完成后，`deployment_checkpoint/config.json` 会记录 Adapter 结构，权重位于
+`deployment_checkpoint/feature_adapter/`。不要把一种结构的权重复制到另一种结构的部署目录。
+推理时不需要修改代码，通过选择对应的完整 deployment checkpoint 切换 Adapter：
+
+```bash
+export ROBOTWIN_PI05_POLICY_PATH="$PWD/outputs/pi05_feature_adapter/image_routed_moe/deployment_checkpoint"
+./policy/lerobot_pi05/run_server.sh
+```
+
+切换到另一种 Adapter 时先停止当前 server，修改 `ROBOTWIN_PI05_POLICY_PATH` 后重新启动。
+`ROBOTWIN_PI05_FEATURE_ADAPTER=on|off|auto` 只控制当前 checkpoint 中的 Adapter 是否启用，
+不会改变 Adapter 结构。`auto` 是默认值；相机评估还可以让 C0 绕过 Adapter，以对照原始模型。
+
 ## 快速检查
 
 ```bash

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import csv
 import importlib
 import json
 import os
@@ -27,6 +26,12 @@ for path in (ROOT, ROOT / "policy"):
 
 from envs._GLOBAL_CONFIGS import CONFIGS_PATH
 from envs.utils.create_actor import UnStableError
+from script.camera_eval_resume import (
+    existing_view,
+    load_or_create_results,
+    unused_video_path,
+    write_results,
+)
 
 
 DEFAULT_INSTRUCTION = (
@@ -75,6 +80,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-gripper-step-m", type=float, default=0.05)
     parser.add_argument("--max-executor-step-rad", type=float, default=0.005)
     parser.add_argument("--max-executor-gripper-step-m", type=float, default=0.004)
+    parser.add_argument(
+        "--bottle-lift-success-height-m",
+        type=float,
+        help=(
+            "Evaluation-only pick_dual_bottles success rule: both bottles must rise "
+            "this many meters above their initial functional-point heights."
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs" / "camera_view_eval")
     parser.add_argument(
         "--run-dir",
@@ -82,6 +95,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Write directly to this directory instead of creating a timestamped "
             "subdirectory below --output-dir. Intended for multi-task orchestration."
+        ),
+    )
+    parser.add_argument(
+        "--resume-existing",
+        action="store_true",
+        help=(
+            "Resume an interrupted --run-dir after strictly validating its policy, "
+            "task, prompt, scenario seeds, policy seed, control settings, and camera "
+            "contract. Completed episodes are never rerun or overwritten."
         ),
     )
     parser.add_argument("--view", choices=[spec.identifier for spec in VIEW_SPECS])
@@ -236,7 +258,10 @@ def collect_valid_seeds(
     task = make_task(task_name)
     valid_seeds: list[int] = []
     candidate_seed = 100000 * (1 + seed)
-    max_attempts = episodes * 50
+    # Some tasks (notably beat_block_hammer) have sparse valid expert seeds;
+    # its first known valid seed is 100066.  Always scan at least 100
+    # candidates so one-episode smoke tests do not fail before reaching it.
+    max_attempts = max(episodes * 50, 100)
 
     for attempt_index in range(max_attempts):
         if len(valid_seeds) == episodes:
@@ -322,30 +347,6 @@ def run_episode(
         close_task(task, clear_cache=((episode_index + 1) % args["clear_cache_freq"] == 0))
 
 
-def write_results(output_dir: Path, payload: dict[str, Any]) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with (output_dir / "results.json").open("w", encoding="utf-8") as result_file:
-        json.dump(payload, result_file, ensure_ascii=False, indent=2)
-        result_file.write("\n")
-
-    with (output_dir / "summary.csv").open("w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(
-            csv_file,
-            fieldnames=("view", "description", "successes", "episodes", "success_rate"),
-        )
-        writer.writeheader()
-        for result in payload["views"]:
-            writer.writerow(
-                {
-                    "view": result["id"],
-                    "description": result["description"],
-                    "successes": result["successes"],
-                    "episodes": result["episodes"],
-                    "success_rate": result["success_rate"],
-                }
-            )
-
-
 def load_scenario_seeds(path: Path, expected_count: int) -> list[int]:
     resolved = path.expanduser().resolve()
     with resolved.open(encoding="utf-8") as seed_file:
@@ -376,6 +377,18 @@ def main() -> None:
         raise ValueError("--video-width and --video-height must be non-negative")
     if cli.max_steps is not None and cli.max_steps <= 0:
         raise ValueError("--max-steps must be positive")
+    if (
+        cli.bottle_lift_success_height_m is not None
+        and cli.bottle_lift_success_height_m <= 0
+    ):
+        raise ValueError("--bottle-lift-success-height-m must be positive")
+    if (
+        cli.bottle_lift_success_height_m is not None
+        and cli.task_name != "pick_dual_bottles"
+    ):
+        raise ValueError("--bottle-lift-success-height-m requires pick_dual_bottles")
+    if cli.resume_existing and cli.run_dir is None:
+        raise ValueError("--resume-existing requires --run-dir")
 
     policy_path = cli.policy_path.expanduser().resolve()
     if not policy_path.is_dir():
@@ -399,28 +412,52 @@ def main() -> None:
     base_args["trace_enabled"] = False
     base_args["policy_inference_seed"] = cli.policy_inference_seed
     base_args["eval_video_stride"] = cli.video_stride
+    if cli.bottle_lift_success_height_m is not None:
+        base_args["eval_lift_success_height_m"] = cli.bottle_lift_success_height_m
+        base_args["success_hold_s"] = 0.0
 
-    deploy = importlib.import_module("lerobot_pi05.deploy_policy")
     if cli.scenario_seed is not None and cli.scenario_seeds_file is not None:
         raise ValueError("Use only one of --scenario-seed and --scenario-seeds-file")
+    if cli.run_dir is not None:
+        output_dir = cli.run_dir.expanduser().resolve()
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = cli.output_dir.expanduser().resolve() / timestamp
+
+    existing_payload: dict[str, Any] | None = None
+    existing_results = output_dir / "results.json"
+    if cli.resume_existing and existing_results.is_file():
+        with existing_results.open(encoding="utf-8") as result_file:
+            candidate = json.load(result_file)
+        if not isinstance(candidate, dict):
+            raise ValueError(f"Existing result is not a JSON object: {existing_results}")
+        existing_payload = candidate
+
     if cli.scenario_seed is not None:
         valid_seeds = [cli.scenario_seed]
     elif cli.scenario_seeds_file is not None:
         valid_seeds = load_scenario_seeds(
             cli.scenario_seeds_file, cli.episodes_per_view
         )
+    elif existing_payload is not None:
+        stored_seeds = existing_payload.get("shared_valid_seeds")
+        if not isinstance(stored_seeds, list):
+            raise ValueError(
+                f"Existing result has no shared_valid_seeds list: {existing_results}"
+            )
+        valid_seeds = [int(seed) for seed in stored_seeds]
+        if len(valid_seeds) != cli.episodes_per_view:
+            raise ValueError(
+                f"Existing result has {len(valid_seeds)} seeds, requested "
+                f"{cli.episodes_per_view}"
+            )
     else:
         print(f"Collecting {cli.episodes_per_view} shared valid seeds from C0...")
         valid_seeds = collect_valid_seeds(
             cli.task_name, base_args, cli.episodes_per_view, cli.seed
         )
     print(f"Shared seeds: {valid_seeds}")
-    if cli.run_dir is not None:
-        output_dir = cli.run_dir.expanduser().resolve()
-    else:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = cli.output_dir.expanduser().resolve() / timestamp
-    payload = {
+    expected_payload = {
         "task_name": cli.task_name,
         "task_config": cli.task_config,
         "policy_path": str(policy_path),
@@ -431,10 +468,53 @@ def main() -> None:
         "shared_valid_seeds": valid_seeds,
         "policy_inference_seed": cli.policy_inference_seed,
         "adapter_c0_bypassed": not cli.adapter_on_c0,
-        "views": [],
+        "success_criterion": (
+            {
+                "kind": "both_bottles_lifted",
+                "height_m": cli.bottle_lift_success_height_m,
+                "hold_s": 0.0,
+            }
+            if cli.bottle_lift_success_height_m is not None
+            else {"kind": "task_default"}
+        ),
+        "seed_search_index": cli.seed,
+        "control_config": {
+            "fps": cli.fps,
+            "actions_per_chunk": cli.actions_per_chunk,
+            "chunk_size_threshold": cli.chunk_size_threshold,
+            "max_policy_step_rad": cli.max_policy_step_rad,
+            "max_gripper_step_m": cli.max_gripper_step_m,
+            "max_executor_step_rad": cli.max_executor_step_rad,
+            "max_executor_gripper_step_m": cli.max_executor_gripper_step_m,
+        },
+        "recording_config": {
+            "enabled": cli.record_video,
+            "video_stride": cli.video_stride,
+            "video_width": cli.video_width,
+            "video_height": cli.video_height,
+            "video_crf": cli.video_crf,
+            "video_preset": cli.video_preset,
+        },
     }
+    payload = load_or_create_results(
+        output_dir,
+        expected_payload,
+        resume_existing=cli.resume_existing,
+        view_specs=VIEW_SPECS,
+    )
+    write_results(output_dir, payload)
+
+    deploy = importlib.import_module("lerobot_pi05.deploy_policy")
     selected_specs = tuple(spec for spec in VIEW_SPECS if cli.view in (None, spec.identifier))
     for spec in selected_specs:
+        view_result = existing_view(payload, spec.identifier)
+        if view_result is not None and view_result["complete"]:
+            print(
+                f"\n[{spec.identifier}] resume: already complete "
+                f"({view_result['successes']}/{view_result['episodes']}), skipping"
+            )
+            continue
+
         view_args = shift_head_camera(base_args, spec)
         # The evaluator knows the active camera configuration. Preserve the
         # original C0 policy exactly; apply the Adapter only to shifted views.
@@ -444,13 +524,53 @@ def main() -> None:
             item for item in view_args["camera"]["static_camera_list"] if item["name"] == "head_camera"
         )
         task = make_task(cli.task_name)
-        episodes = []
-        successes = 0
+        if view_result is None:
+            view_result = {
+                "id": spec.identifier,
+                "kind": spec.kind,
+                "value": spec.value,
+                "description": spec.description,
+                "successes": 0,
+                "episodes": 0,
+                "success_rate": None,
+                "complete": False,
+                "head_camera": {
+                    "position": head_camera["position"],
+                    "forward": head_camera["forward"],
+                    "left": head_camera["left"],
+                },
+                "episode_results": [],
+            }
+            payload["views"].append(view_result)
+            write_results(output_dir, payload)
+        else:
+            requested_camera = {
+                "position": head_camera["position"],
+                "forward": head_camera["forward"],
+                "left": head_camera["left"],
+            }
+            for field, requested in requested_camera.items():
+                existing = view_result.get("head_camera", {}).get(field)
+                if existing is None or not np.allclose(existing, requested):
+                    raise ValueError(
+                        f"Resume camera contract mismatch for {spec.identifier}.{field}"
+                    )
+
+        start_episode = len(view_result["episode_results"])
+        successes = int(view_result["successes"])
         print(f"\n[{spec.identifier}] {spec.description}")
-        for episode_index, scenario_seed in enumerate(valid_seeds):
+        if start_episode:
+            print(
+                f"[{spec.identifier}] resume: {start_episode}/{len(valid_seeds)} "
+                "episodes already checkpointed"
+            )
+        for episode_index in range(start_episode, len(valid_seeds)):
+            scenario_seed = valid_seeds[episode_index]
             video_path = None
             if cli.record_video:
-                video_path = output_dir / f"{spec.identifier}_seed_{scenario_seed}.mp4"
+                video_path = unused_video_path(
+                    output_dir / f"{spec.identifier}_seed_{scenario_seed}.mp4"
+                )
             success, error = run_episode(
                 task,
                 view_args,
@@ -467,7 +587,7 @@ def main() -> None:
                 max_steps=cli.max_steps,
             )
             successes += int(success)
-            episodes.append(
+            view_result["episode_results"].append(
                 {
                     "seed": scenario_seed,
                     "success": success,
@@ -475,29 +595,18 @@ def main() -> None:
                     "video": str(video_path) if video_path is not None else None,
                 }
             )
+            view_result["successes"] = successes
+            view_result["episodes"] = len(view_result["episode_results"])
+            view_result["success_rate"] = successes / view_result["episodes"]
+            view_result["complete"] = view_result["episodes"] == len(valid_seeds)
+            write_results(output_dir, payload)
             print(
                 f"[{spec.identifier}] {episode_index + 1}/{len(valid_seeds)} "
                 f"seed={scenario_seed} {'success' if success else 'fail'}"
             )
 
         success_rate = successes / len(valid_seeds)
-        payload["views"].append(
-            {
-                "id": spec.identifier,
-                "kind": spec.kind,
-                "value": spec.value,
-                "description": spec.description,
-                "successes": successes,
-                "episodes": len(valid_seeds),
-                "success_rate": success_rate,
-                "head_camera": {
-                    "position": head_camera["position"],
-                    "forward": head_camera["forward"],
-                    "left": head_camera["left"],
-                },
-                "episode_results": episodes,
-            }
-        )
+        view_result["complete"] = True
         write_results(output_dir, payload)
         print(f"[{spec.identifier}] {successes}/{len(valid_seeds)} = {success_rate:.1%}")
         model.channel.close()

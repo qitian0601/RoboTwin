@@ -16,8 +16,10 @@ task_config/
 !task_config/
 task_config/*
 !task_config/demo_nero_beat_block_hammer_c0.yml
+!task_config/demo_nero_beat_block_hammer_slow120.yml
 !task_config/demo_nero_click_bell_c0.yml
 !task_config/demo_nero_pick_dual_bottles_c0.yml
+!task_config/demo_nero_pick_dual_bottles_slow120.yml
 !task_config/demo_nero_two_cubes.yml
 !task_config/demo_nero_two_cubes_ee80.yml
 **/.DS_Store

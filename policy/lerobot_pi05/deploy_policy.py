@@ -165,6 +165,78 @@ def _load_and_validate_features(checkpoint: Path) -> dict[str, dict]:
     return features
 
 
+def _checkpoint_returns_absolute_actions(checkpoint: Path) -> bool:
+    """Return whether the LeRobot server postprocesses actions to absolute space.
+
+    Older PI0.5 checkpoints used by RoboTwin do not contain an enabled
+    ``absolute_actions_processor`` and therefore return relative joint
+    deltas.  Newer checkpoints may apply that processor inside the policy
+    server.  The client must not add the current state a second time in that
+    case (which would produce ``q + (q + delta)``).
+    """
+    postprocessor_path = checkpoint / "policy_postprocessor.json"
+    if not postprocessor_path.is_file():
+        return False
+    try:
+        with postprocessor_path.open(encoding="utf-8") as postprocessor_file:
+            postprocessor = json.load(postprocessor_file)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"Could not read PI0.5 postprocessor contract: {postprocessor_path}"
+        ) from error
+    # Current LeRobot exports use ``steps[].registry_name`` and older
+    # experimental exports used ``processors[].type``.  Accept both forms so
+    # the contract detection itself is backward compatible.
+    processors = postprocessor.get("steps", postprocessor.get("processors", []))
+    if isinstance(processors, dict):
+        processors = [processors]
+    return any(
+        isinstance(processor, dict)
+        and (
+            processor.get("registry_name") == "absolute_actions_processor"
+            or processor.get("type") == "absolute_actions_processor"
+        )
+        and bool(
+            processor.get("config", {}).get(
+                "enabled", processor.get("enabled", True)
+            )
+        )
+        for processor in processors
+    )
+
+
+def _policy_action_to_absolute_bus(
+    predicted_action: np.ndarray,
+    base_bus_state: np.ndarray,
+    *,
+    use_relative_actions: bool,
+    server_returns_absolute_actions: bool,
+) -> np.ndarray:
+    """Resolve a server action into one absolute 16D bus target.
+
+    The relative checkpoint contract applies deltas to the 14 arm joints while
+    keeping the two gripper commands absolute.  A newer server may already have
+    performed that conversion through ``absolute_actions_processor``; those
+    outputs must pass through unchanged.
+    """
+    predicted_action = np.asarray(predicted_action, dtype=np.float32)
+    base_bus_state = np.asarray(base_bus_state, dtype=np.float32)
+    if predicted_action.shape != (EXPECTED_ACTION_DIM,):
+        raise ValueError(
+            f"Expected policy action shape (16,), got {predicted_action.shape}"
+        )
+    if base_bus_state.shape != (EXPECTED_STATE_DIM,):
+        raise ValueError(
+            f"Expected base bus state shape (16,), got {base_bus_state.shape}"
+        )
+    if server_returns_absolute_actions or not use_relative_actions:
+        return predicted_action.copy()
+    absolute_action = base_bus_state.copy()
+    absolute_action[:14] += predicted_action[:14]
+    absolute_action[14:16] = predicted_action[14:16]
+    return absolute_action
+
+
 def _robotwin_state_to_bus(state: np.ndarray, gripper_max_width: float) -> np.ndarray:
     """Convert left7,left-gripper,right7,right-gripper to training bus order."""
     state = np.asarray(state, dtype=np.float32)
@@ -207,6 +279,9 @@ class RemotePI05:
         self.fps = int(usr_args.get("fps", 30))
         self.gripper_max_width = float(usr_args.get("gripper_max_width", 0.1))
         self.use_relative_actions = bool(usr_args.get("use_relative_actions", True))
+        self.server_returns_absolute_actions = _checkpoint_returns_absolute_actions(
+            self.checkpoint
+        )
         self.direct_sim_control = bool(usr_args.get("direct_sim_control", True))
         self.exact_policy_tracking = bool(usr_args.get("exact_policy_tracking", True))
         self.max_policy_step_rad = float(usr_args.get("max_policy_step_rad", 0.05))
@@ -323,14 +398,12 @@ class RemotePI05:
         actions = []
         for item in timed_actions:
             predicted_action = item.get_action().numpy()
-            if self.use_relative_actions:
-                # Each action in the 50-step chunk is relative to the state
-                # that produced the chunk, not to the preceding prediction.
-                bus_action = base_bus_state.copy()
-                bus_action[:14] += predicted_action[:14]
-                bus_action[14:16] = predicted_action[14:16]
-            else:
-                bus_action = predicted_action
+            bus_action = _policy_action_to_absolute_bus(
+                predicted_action,
+                base_bus_state,
+                use_relative_actions=self.use_relative_actions,
+                server_returns_absolute_actions=self.server_returns_absolute_actions,
+            )
             actions.append(
                 (
                     int(item.timestep),
@@ -346,6 +419,7 @@ class RemotePI05:
                             "task": task,
                             "inference_elapsed_s": inference_elapsed_s,
                             "base_bus_state": base_bus_state.tolist(),
+                            "server_returns_absolute_actions": self.server_returns_absolute_actions,
                             "relative_actions": [item.get_action().numpy().tolist() for item in timed_actions],
                             "robotwin_targets": [action.tolist() for _, action in actions],
                         }

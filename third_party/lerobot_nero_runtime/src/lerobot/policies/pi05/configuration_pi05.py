@@ -90,14 +90,28 @@ class PI05Config(PreTrainedConfig):
     train_expert_only: bool = False  # Freeze entire VLM, train only action expert and projections
     # Action dimensions excluded from the flow-matching loss. The policy still predicts these dimensions.
     action_loss_mask_indices: list[int] = field(default_factory=list)
+    # Optional dataset key used only to weight the training loss. Keeping the
+    # field in the inference config makes checkpoints produced by newer
+    # trainers loadable; it has no effect during action prediction.
+    action_loss_weight_key: str | None = None
 
     # Frozen-backbone view adaptation. Disabled preserves the original model path.
     use_feature_adapter: bool = False
     feature_adapter_camera_keys: list[str] = field(
         default_factory=lambda: ["observation.images.front"]
     )
+    # ``legacy`` keeps the existing teacher-first Adapter architecture.  The
+    # three isolated candidates are selected explicitly by their variant name.
+    feature_adapter_variant: str = "legacy"
     feature_adapter_bottleneck_dim: int = 256
     feature_adapter_num_heads: int = 8
+    feature_adapter_num_blocks: int = 2
+    feature_adapter_ffn_expansion: int = 4
+    feature_adapter_num_experts: int = 4
+    # Optional future pose estimator interface.  It is disabled by default and
+    # missing/invalid pose inputs are an exact image-only fallback.
+    feature_adapter_pose_enabled: bool = False
+    feature_adapter_pose_dim: int = 9
     feature_adapter_checkpoint: str | None = None
     # Teacher behaviour is the primary adaptation target. Flow supervision is
     # deliberately auxiliary because a frozen policy can differ from a raw
@@ -147,6 +161,25 @@ class PI05Config(PreTrainedConfig):
 
         if self.relative_action_type not in ["joint", "ee_so3", "ee_local_se3"]:
             raise ValueError(f"Invalid relative_action_type: {self.relative_action_type}")
+
+        valid_adapter_variants = {
+            "legacy",
+            "view_feature_adapter",
+            "pure_teacher_gated_residual",
+            "multi_scale_dynamic",
+            "image_routed_moe",
+        }
+        if self.feature_adapter_variant not in valid_adapter_variants:
+            raise ValueError(
+                f"Invalid feature_adapter_variant: {self.feature_adapter_variant}; "
+                f"choose one of {sorted(valid_adapter_variants)}"
+            )
+        if self.feature_adapter_pose_dim != 9:
+            raise ValueError(
+                "feature_adapter_pose_dim must be 9 (translation 3 + continuous rotation 6)"
+            )
+        if self.feature_adapter_num_experts < 2:
+            raise ValueError("feature_adapter_num_experts must be at least 2")
 
     def validate_features(self) -> None:
         """Validate and set up input/output features."""

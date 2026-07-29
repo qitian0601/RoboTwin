@@ -9,6 +9,14 @@ INPUT_DIR="${INPUT_DIR:-${ROOT}/data/${TASK_NAME}/${TASK_CONFIG}}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT}/data/${TASK_NAME}_lerobot_v3}"
 REPO_ID="${REPO_ID:-${TASK_NAME}_lerobot_v3}"
 
+# Prefer the local official LeRobot checkout. The bundled Nero runtime tracks a
+# newer Python syntax level and cannot be imported by the Python 3.10 `lerobot`
+# environment used for offline conversion on this workstation.
+OFFICIAL_LEROBOT_SRC="${ROOT}/../lerobot/src"
+if [[ -z "${ROBOTWIN_LEROBOT_SRC:-}" && -d "${OFFICIAL_LEROBOT_SRC}" ]]; then
+  export ROBOTWIN_LEROBOT_SRC="${OFFICIAL_LEROBOT_SRC}"
+fi
+
 cd "${ROOT}"
 # The dedicated `lerobot` environment currently obtains h5py from qt's user
 # site-packages. Keep simulator processes isolated, but allow that dependency

@@ -1,10 +1,18 @@
-# Nero C0 smoke/collection config for pick_dual_bottles.
-# Robot, table, home poses, and all three cameras match demo_nero_two_cubes.yml.
+# Robust slow collection config for the 120-episode three-task training set.
 render_freq: 0
-episode_num: 1
-append_episode_on_run: true
+episode_num: 120
+append_episode_on_run: false
 use_seed: false
 save_freq: 15
+motion_time_dilation_factor: 0.50
+balance_arms: true
+grasp_hold_s: 0.4
+final_hold_s: 3.0
+success_hold_s: 0.4
+initial_lift_m: 0.03
+success_max_linear_velocity_m_s: 0.08
+success_max_angular_velocity_rad_s: 1.5
+generate_episode_instructions: false
 render_quality:
   camera_shader_dir: rt
   viewer_shader_dir: rt
@@ -14,9 +22,6 @@ render_quality:
 embodiment: [nero, nero, 0.7]
 embodiment_overrides:
   left:
-    # Lock the grasp-axis rotation to the branch that remains reachable over
-    # the full narrow bottle grid.
-    rotate_lim: [-0.942, -0.942]
     homestate:
       - [-0.07127924665144843, -1.3606935914398193, 0.02806489437206882, 1.8816045599900468, 0.04045673206122856, 0.0009424777960769379, 1.5707265136248167]
       - [-0.07127924665144843, -1.3606935914398193, 0.02806489437206882, 1.8816045599900468, 0.04045673206122856, 0.0009424777960769379, 1.5707265136248167]
@@ -24,7 +29,6 @@ embodiment_overrides:
       - [0.0, -0.65, 0.74, 0.707107, 0.0, 0.0, -0.707107]
       - [0.0, -0.65, 0.74, 0.707107, 0.0, 0.0, -0.707107]
   right:
-    rotate_lim: [-0.942, -0.942]
     homestate:
       - [-0.07127924665144843, -1.3606935914398193, 0.02806489437206882, 1.8816045599900468, 0.04045673206122856, 0.0009424777960769379, 1.5707265136248167]
       - [-0.07127924665144843, -1.3606935914398193, 0.02806489437206882, 1.8816045599900468, 0.04045673206122856, 0.0009424777960769379, 1.5707265136248167]
@@ -35,23 +39,6 @@ table_length: 1.4
 table_width: 0.7
 table_xy_bias: [0.0, -0.30]
 table_texture_id: real_table_wood
-# Nero needs a deeper cylindrical grasp than the cube; -5 cm is the shallowest
-# tested value that lifts both bottles instead of pushing them away.
-dual_bottle_grasp_dis: -0.05
-# The stock base16 bottle is 9.2 cm wide, beyond the reliable Nero grasp span.
-# Use the 6.0 cm bottle geometry for both randomized left/right instances.
-dual_bottle_model_ids: [22, 22]
-# Scale the 6 cm stock bottle to the Nero-tested 4.8 cm grasp span.
-dual_bottle_scale: 0.8
-# Use the same top-down grasp orientations already validated by the cube task.
-dual_bottle_use_nero_contacts: true
-# Use the same verified top-down contact for both arms so the planner cannot
-# switch between distinct grasp orientations.
-dual_bottle_contact_point_ids: [0, 0]
-# Offsets are relative to table_xy_bias. The centers are 2 cm closer to the
-# robots than the old distribution, with only +/-2 cm XY randomization.
-dual_bottle_spawn_center_offsets: [[-0.15, 0.11], [0.15, 0.11]]
-dual_bottle_spawn_half_range: [0.02, 0.02]
 language_num: 1
 domain_randomization:
   random_background: false
