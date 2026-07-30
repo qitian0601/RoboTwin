@@ -34,7 +34,9 @@ except ModuleNotFoundError:
         raise
     sys.path.append(grpc_site_packages)
     import grpc
-    sys.path.remove(grpc_site_packages)
+    # Keep this fallback path at the end: LeRobot transport imports optional
+    # dependencies such as draccus after grpc, while the active RoboTwin
+    # environment must retain precedence for ABI-sensitive packages (NumPy).
 
 from lerobot.transport import services_pb2, services_pb2_grpc
 from lerobot.transport.utils import grpc_channel_options, send_bytes_in_chunks
@@ -276,6 +278,9 @@ class RemotePI05:
         self.actions_per_chunk = int(usr_args.get("actions_per_chunk", 50))
         self.chunk_size_threshold = float(usr_args.get("chunk_size_threshold", 0.8))
         self.aggregate_fn_name = str(usr_args.get("aggregate_fn_name", "average"))
+        self.action_merge_new_weight = float(
+            usr_args.get("action_merge_new_weight", 0.5)
+        )
         self.fps = int(usr_args.get("fps", 30))
         self.gripper_max_width = float(usr_args.get("gripper_max_width", 0.1))
         self.use_relative_actions = bool(usr_args.get("use_relative_actions", True))
@@ -307,6 +312,8 @@ class RemotePI05:
             raise ValueError("chunk_size_threshold must be in [0, 1)")
         if self.aggregate_fn_name != "average":
             raise ValueError("The RoboTwin PI0.5 adapter currently supports aggregate_fn_name=average")
+        if not 0.0 <= self.action_merge_new_weight <= 1.0:
+            raise ValueError("action_merge_new_weight must be in [0, 1]")
         if self.fps <= 0:
             raise ValueError("fps must be positive")
 
@@ -442,7 +449,10 @@ class RemotePI05:
             merged[timestep] = (
                 new_action
                 if old_action is None
-                else 0.5 * old_action + 0.5 * new_action
+                else (
+                    (1.0 - self.action_merge_new_weight) * old_action
+                    + self.action_merge_new_weight * new_action
+                )
             ).astype(np.float32)
 
         if not merged:

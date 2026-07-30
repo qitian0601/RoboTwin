@@ -44,10 +44,22 @@ def _expected() -> dict:
         "policy_inference_seed": 123,
         "adapter_c0_bypassed": True,
         "seed_search_index": 0,
+        "scenario_episode_index": None,
+        "scenario_sampling_range": {
+            "kind": "observed_slow120_training_support",
+            "left_x_m": [-0.25, -0.20],
+            "right_x_m": [0.18, 0.24],
+            "y_m": [-0.18, -0.15],
+        },
+        "success_criterion": {
+            "kind": "any_hammer_block_contact",
+            "hold_s": 0.0,
+        },
         "control_config": {
             "fps": 30,
             "actions_per_chunk": 50,
             "chunk_size_threshold": 0.8,
+            "action_merge_new_weight": 0.5,
             "max_policy_step_rad": 0.05,
             "max_gripper_step_m": 0.05,
             "max_executor_step_rad": 0.005,
@@ -160,11 +172,34 @@ def test_resume_rejects_policy_seed_or_scenario_seed_mismatch(tmp_path: Path) ->
         )
 
 
+def test_resume_rejects_hammer_range_or_success_criterion_mismatch(
+    tmp_path: Path,
+) -> None:
+    write_results(tmp_path, _partial_payload())
+
+    wrong_range = copy.deepcopy(_expected())
+    wrong_range["scenario_sampling_range"] = None
+    with pytest.raises(ValueError, match="scenario_sampling_range"):
+        load_or_create_results(
+            tmp_path, wrong_range, resume_existing=True, view_specs=VIEW_SPECS
+        )
+
+    wrong_success = copy.deepcopy(_expected())
+    wrong_success["success_criterion"] = {"kind": "task_default"}
+    with pytest.raises(ValueError, match="success_criterion"):
+        load_or_create_results(
+            tmp_path, wrong_success, resume_existing=True, view_specs=VIEW_SPECS
+        )
+
+
 def test_resume_rejects_hammer_prompt_or_trace_contract_mismatch(tmp_path: Path) -> None:
     write_results(tmp_path, _partial_payload())
 
     wrong_prompts = copy.deepcopy(_expected())
-    wrong_prompts["instruction_by_arm"] = {"left": "left prompt", "right": "right prompt"}
+    wrong_prompts["instruction_by_arm"] = {
+        "left": "left prompt",
+        "right": "right prompt",
+    }
     with pytest.raises(ValueError, match="instruction_by_arm"):
         load_or_create_results(
             tmp_path, wrong_prompts, resume_existing=True, view_specs=VIEW_SPECS

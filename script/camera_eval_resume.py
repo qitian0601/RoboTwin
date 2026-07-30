@@ -26,6 +26,9 @@ _RESUME_CORE_FIELDS = (
 
 _RESUME_VERSIONED_FIELDS = (
     "seed_search_index",
+    "scenario_episode_index",
+    "scenario_sampling_range",
+    "success_criterion",
     "control_config",
     "recording_config",
     "instruction_by_arm",

@@ -84,9 +84,33 @@ def parse_args() -> argparse.Namespace:
             "position separately for every episode."
         ),
     )
+    parser.add_argument(
+        "--hammer-contact-success",
+        action="store_true",
+        help=(
+            "Evaluation-only Hammer success rule: require any hammer/block physical "
+            "contact once, without functional-point alignment, velocity stability, "
+            "or a sustained hold."
+        ),
+    )
+    parser.add_argument(
+        "--hammer-training-support-range",
+        action="store_true",
+        help=(
+            "Restrict Hammer block sampling to the observed slow120 training "
+            "support: left x [-0.25, -0.20], right x [0.18, 0.24], and "
+            "world y [-0.18, -0.15]."
+        ),
+    )
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--actions-per-chunk", type=int, default=50)
     parser.add_argument("--chunk-size-threshold", type=float, default=0.8)
+    parser.add_argument(
+        "--action-merge-new-weight",
+        type=float,
+        default=0.5,
+        help="Weight of the newly predicted action when overlapping chunks are merged.",
+    )
     parser.add_argument("--max-policy-step-rad", type=float, default=0.05)
     parser.add_argument("--max-gripper-step-m", type=float, default=0.05)
     parser.add_argument("--max-executor-step-rad", type=float, default=0.005)
@@ -127,6 +151,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--view", choices=[spec.identifier for spec in VIEW_SPECS])
     parser.add_argument("--scenario-seed", type=int)
+    parser.add_argument(
+        "--scenario-episode-index",
+        type=int,
+        help=(
+            "Use this task episode index for the first scenario instead of zero. "
+            "This reproduces task logic that depends on episode parity."
+        ),
+    )
     parser.add_argument(
         "--scenario-seeds-file",
         type=Path,
@@ -280,7 +312,9 @@ def collect_valid_seeds(
     # Some tasks (notably beat_block_hammer) have sparse valid expert seeds;
     # its first known valid seed is 100066.  Always scan at least 100
     # candidates so one-episode smoke tests do not fail before reaching it.
-    max_attempts = max(episodes * 50, 100)
+    # Hammer expert planning is sparse enough that a 10-episode evaluation can
+    # exhaust 500 candidates before finding ten reproducible scenes.
+    max_attempts = max(episodes * 100, 100)
 
     for attempt_index in range(max_attempts):
         if len(valid_seeds) == episodes:
@@ -402,9 +436,19 @@ def main() -> None:
         raise ValueError("--video-width and --video-height must be non-negative")
     if cli.max_steps is not None and cli.max_steps <= 0:
         raise ValueError("--max-steps must be positive")
+    if cli.scenario_episode_index is not None and cli.scenario_episode_index < 0:
+        raise ValueError("--scenario-episode-index must be non-negative")
+    if not 0.0 <= cli.action_merge_new_weight <= 1.0:
+        raise ValueError("--action-merge-new-weight must be in [0, 1]")
     if cli.hammer_arm_aware_instruction and cli.task_name != "beat_block_hammer":
         raise ValueError(
             "--hammer-arm-aware-instruction requires --task-name beat_block_hammer"
+        )
+    if cli.hammer_contact_success and cli.task_name != "beat_block_hammer":
+        raise ValueError("--hammer-contact-success requires --task-name beat_block_hammer")
+    if cli.hammer_training_support_range and cli.task_name != "beat_block_hammer":
+        raise ValueError(
+            "--hammer-training-support-range requires --task-name beat_block_hammer"
         )
     if (
         cli.bottle_lift_success_height_m is not None
@@ -430,6 +474,7 @@ def main() -> None:
     base_args["actions_per_chunk"] = cli.actions_per_chunk
     base_args["chunk_size_threshold"] = cli.chunk_size_threshold
     base_args["aggregate_fn_name"] = "average"
+    base_args["action_merge_new_weight"] = cli.action_merge_new_weight
     base_args["fps"] = cli.fps
     base_args["gripper_max_width"] = 0.1
     base_args["direct_sim_control"] = True
@@ -446,6 +491,23 @@ def main() -> None:
     if cli.bottle_lift_success_height_m is not None:
         base_args["eval_lift_success_height_m"] = cli.bottle_lift_success_height_m
         base_args["success_hold_s"] = 0.0
+    if cli.hammer_contact_success:
+        base_args["success_require_alignment"] = False
+        base_args["success_require_stability"] = False
+        base_args["success_hold_s"] = 0.0
+    hammer_sampling_range = None
+    if cli.hammer_training_support_range:
+        base_args["block_left_xlim_offset"] = [-0.25, -0.20]
+        base_args["block_right_xlim_offset"] = [0.18, 0.24]
+        # The slow120 table bias is y=-0.30, giving world y [-0.18, -0.15].
+        base_args["block_ylim_offset"] = [0.12, 0.15]
+        table_x, table_y = base_args["table_xy_bias"]
+        hammer_sampling_range = {
+            "kind": "observed_slow120_training_support",
+            "left_x_m": [table_x - 0.25, table_x - 0.20],
+            "right_x_m": [table_x + 0.18, table_x + 0.24],
+            "y_m": [table_y + 0.12, table_y + 0.15],
+        }
 
     if cli.scenario_seed is not None and cli.scenario_seeds_file is not None:
         raise ValueError("Use only one of --scenario-seed and --scenario-seeds-file")
@@ -500,6 +562,7 @@ def main() -> None:
         "episodes_per_view": cli.episodes_per_view,
         "max_steps": cli.max_steps,
         "shared_valid_seeds": valid_seeds,
+        "scenario_episode_index": cli.scenario_episode_index,
         "policy_inference_seed": cli.policy_inference_seed,
         "adapter_c0_bypassed": not cli.adapter_on_c0,
         "success_criterion": (
@@ -509,13 +572,22 @@ def main() -> None:
                 "hold_s": 0.0,
             }
             if cli.bottle_lift_success_height_m is not None
-            else {"kind": "task_default"}
+            else (
+                {
+                    "kind": "any_hammer_block_contact",
+                    "hold_s": 0.0,
+                }
+                if cli.hammer_contact_success
+                else {"kind": "task_default"}
+            )
         ),
         "seed_search_index": cli.seed,
+        "scenario_sampling_range": hammer_sampling_range,
         "control_config": {
             "fps": cli.fps,
             "actions_per_chunk": cli.actions_per_chunk,
             "chunk_size_threshold": cli.chunk_size_threshold,
+            "action_merge_new_weight": cli.action_merge_new_weight,
             "max_policy_step_rad": cli.max_policy_step_rad,
             "max_gripper_step_m": cli.max_gripper_step_m,
             "max_executor_step_rad": cli.max_executor_step_rad,
@@ -605,6 +677,11 @@ def main() -> None:
             )
         for episode_index in range(start_episode, len(valid_seeds)):
             scenario_seed = valid_seeds[episode_index]
+            task_episode_index = (
+                episode_index
+                if cli.scenario_episode_index is None
+                else cli.scenario_episode_index + episode_index
+            )
             video_path = None
             if cli.record_video:
                 video_path = unused_video_path(
@@ -615,7 +692,7 @@ def main() -> None:
                 view_args,
                 model,
                 scenario_seed,
-                episode_index,
+                task_episode_index,
                 cli.instruction,
                 video_path,
                 video_fps=cli.fps / cli.video_stride,
@@ -630,6 +707,7 @@ def main() -> None:
             view_result["episode_results"].append(
                 {
                     "seed": scenario_seed,
+                    "scenario_episode_index": task_episode_index,
                     "instruction": episode_instruction,
                     "success": success,
                     "error": error,

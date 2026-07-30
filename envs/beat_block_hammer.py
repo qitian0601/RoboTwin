@@ -11,7 +11,22 @@ class beat_block_hammer(Base_Task):
         self.grasp_hold_s = float(kwags.get("grasp_hold_s", 0.4))
         self.final_hold_s = float(kwags.get("final_hold_s", 0.5))
         self.success_hold_s = float(kwags.get("success_hold_s", 0.4))
+        self.success_require_stability = bool(
+            kwags.get("success_require_stability", True)
+        )
+        self.success_require_alignment = bool(
+            kwags.get("success_require_alignment", True)
+        )
         self.initial_lift_m = float(kwags.get("initial_lift_m", 0.03))
+        self.block_left_xlim_offset = list(
+            kwags.get("block_left_xlim_offset", [-0.25, -0.06])
+        )
+        self.block_right_xlim_offset = list(
+            kwags.get("block_right_xlim_offset", [0.06, 0.25])
+        )
+        self.block_ylim_offset = list(
+            kwags.get("block_ylim_offset", [-0.05, 0.15])
+        )
         self.success_max_linear_velocity = float(
             kwags.get("success_max_linear_velocity_m_s", 0.08)
         )
@@ -33,15 +48,16 @@ class beat_block_hammer(Base_Task):
         if self.balance_arms:
             desired_arm = "left" if self.ep_num % 2 == 0 else "right"
             block_xlim = (
-                [table_x - 0.25, table_x - 0.06]
+                [table_x + value for value in self.block_left_xlim_offset]
                 if desired_arm == "left"
-                else [table_x + 0.06, table_x + 0.25]
+                else [table_x + value for value in self.block_right_xlim_offset]
             )
         else:
             block_xlim = [table_x - 0.25, table_x + 0.25]
+        block_ylim = [table_y + value for value in self.block_ylim_offset]
         block_pose = rand_pose(
             xlim=block_xlim,
-            ylim=[table_y - 0.05, table_y + 0.15],
+            ylim=block_ylim,
             zlim=[0.76],
             qpos=[1, 0, 0, 0],
             rotate_rand=True,
@@ -53,7 +69,7 @@ class beat_block_hammer(Base_Task):
         ):
             block_pose = rand_pose(
                 xlim=block_xlim,
-                ylim=[table_y - 0.05, table_y + 0.15],
+                ylim=block_ylim,
                 zlim=[0.76],
                 qpos=[1, 0, 0, 0],
                 rotate_rand=True,
@@ -140,9 +156,12 @@ class beat_block_hammer(Base_Task):
         block_pose = self.block.get_functional_point(1, "pose").p
         eps = np.array([0.02, 0.02])
         return (
-            np.all(abs(hammer_target_pose[:2] - block_pose[:2]) < eps)
+            (
+                not self.success_require_alignment
+                or np.all(abs(hammer_target_pose[:2] - block_pose[:2]) < eps)
+            )
             and self.check_actors_contact(self.hammer.get_name(), self.block.get_name())
-            and self._hammer_is_stable()
+            and (not self.success_require_stability or self._hammer_is_stable())
         )
 
     def _step_scene(self):
