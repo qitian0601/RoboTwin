@@ -61,6 +61,8 @@ def _expected() -> dict:
             "video_crf": 28,
             "video_preset": "ultrafast",
         },
+        "instruction_by_arm": None,
+        "trace_dir": None,
     }
 
 
@@ -155,6 +157,24 @@ def test_resume_rejects_policy_seed_or_scenario_seed_mismatch(tmp_path: Path) ->
     with pytest.raises(ValueError, match="shared_valid_seeds"):
         load_or_create_results(
             tmp_path, wrong_scenario_seed, resume_existing=True, view_specs=VIEW_SPECS
+        )
+
+
+def test_resume_rejects_hammer_prompt_or_trace_contract_mismatch(tmp_path: Path) -> None:
+    write_results(tmp_path, _partial_payload())
+
+    wrong_prompts = copy.deepcopy(_expected())
+    wrong_prompts["instruction_by_arm"] = {"left": "left prompt", "right": "right prompt"}
+    with pytest.raises(ValueError, match="instruction_by_arm"):
+        load_or_create_results(
+            tmp_path, wrong_prompts, resume_existing=True, view_specs=VIEW_SPECS
+        )
+
+    wrong_trace = copy.deepcopy(_expected())
+    wrong_trace["trace_dir"] = "/different/trace"
+    with pytest.raises(ValueError, match="trace_dir"):
+        load_or_create_results(
+            tmp_path, wrong_trace, resume_existing=True, view_specs=VIEW_SPECS
         )
 
 

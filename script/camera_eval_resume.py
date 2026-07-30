@@ -28,6 +28,8 @@ _RESUME_VERSIONED_FIELDS = (
     "seed_search_index",
     "control_config",
     "recording_config",
+    "instruction_by_arm",
+    "trace_dir",
 )
 
 
@@ -190,12 +192,13 @@ def load_or_create_results(
     # Older files predate these explicit fields. Upgrade them only after every
     # historically recorded, result-affecting field matched above.
     for field in _RESUME_VERSIONED_FIELDS:
-        if field in payload and payload[field] != expected[field]:
+        requested = expected.get(field)
+        if field in payload and payload[field] != requested:
             raise ValueError(
                 f"Resume contract mismatch for {field}: "
-                f"existing={payload[field]!r}, requested={expected[field]!r}"
+                f"existing={payload[field]!r}, requested={requested!r}"
             )
-        payload[field] = expected[field]
+        payload[field] = requested
     payload["resume_contract_version"] = 1
     _normalise_resumed_views(payload, expected["shared_valid_seeds"], view_specs)
     return payload

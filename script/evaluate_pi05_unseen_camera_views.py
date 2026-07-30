@@ -301,7 +301,7 @@ def main() -> None:
             successes = 0
             print(f"\n[{spec.identifier}] {spec.group}: {spec.description}")
             for episode_index, scenario_seed in enumerate(seeds):
-                success, error = base.run_episode(
+                success, error, episode_instruction = base.run_episode(
                     task,
                     view_args,
                     model,
@@ -312,7 +312,12 @@ def main() -> None:
                 )
                 successes += int(success)
                 episode_results.append(
-                    {"seed": scenario_seed, "success": success, "error": error}
+                    {
+                        "seed": scenario_seed,
+                        "instruction": episode_instruction,
+                        "success": success,
+                        "error": error,
+                    }
                 )
                 print(
                     f"[{spec.identifier}] {episode_index + 1}/{len(seeds)} "

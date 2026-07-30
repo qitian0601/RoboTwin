@@ -32,13 +32,16 @@ from script.camera_eval_resume import (
     unused_video_path,
     write_results,
 )
+from script.hammer_task_prompts import (
+    HAMMER_ARM_INSTRUCTIONS,
+    hammer_instruction_for_block_x,
+)
 
 
 DEFAULT_INSTRUCTION = (
     "Use the right arm to place the yellow cube into the black box, then use the left arm "
     "to place the green cube into the black box."
 )
-
 
 @dataclass(frozen=True)
 class ViewSpec:
@@ -73,6 +76,14 @@ def parse_args() -> argparse.Namespace:
         help="Reset PI0.5 flow-noise RNG to this seed at the start of every episode.",
     )
     parser.add_argument("--instruction", default=DEFAULT_INSTRUCTION)
+    parser.add_argument(
+        "--hammer-arm-aware-instruction",
+        action="store_true",
+        help=(
+            "Select the canonical left/right Hammer training prompt from the block "
+            "position separately for every episode."
+        ),
+    )
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--actions-per-chunk", type=int, default=50)
     parser.add_argument("--chunk-size-threshold", type=float, default=0.8)
@@ -80,6 +91,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-gripper-step-m", type=float, default=0.05)
     parser.add_argument("--max-executor-step-rad", type=float, default=0.005)
     parser.add_argument("--max-executor-gripper-step-m", type=float, default=0.004)
+    parser.add_argument(
+        "--trace-dir",
+        type=Path,
+        help=(
+            "Write per-replan policy outputs and converted robot targets as JSONL "
+            "for inference diagnostics."
+        ),
+    )
     parser.add_argument(
         "--bottle-lift-success-height-m",
         type=float,
@@ -298,12 +317,18 @@ def run_episode(
     video_crf: int = 23,
     video_preset: str = "medium",
     max_steps: int | None = None,
-) -> tuple[bool, str | None]:
+    hammer_arm_aware_instruction: bool = False,
+) -> tuple[bool, str | None, str]:
     deploy = importlib.import_module("lerobot_pi05.deploy_policy")
     video_started = False
+    episode_instruction = instruction
     try:
         task.setup_demo(now_ep_num=episode_index, seed=seed, is_test=True, **args)
-        task.set_instruction(instruction=instruction)
+        if hammer_arm_aware_instruction:
+            block_x = float(task.block.get_pose().p[0])
+            table_x = float(task.table_xy_bias[0])
+            episode_instruction = hammer_instruction_for_block_x(block_x, table_x)
+        task.set_instruction(instruction=episode_instruction)
         if video_path is not None:
             video_path.parent.mkdir(parents=True, exist_ok=True)
             observation = task.get_obs()
@@ -335,12 +360,12 @@ def run_episode(
         while task.take_action_cnt < episode_step_limit:
             deploy.eval(task, model, task.get_obs())
             if task.eval_success:
-                return True, None
+                return True, None, episode_instruction
         if max_steps is not None and max_steps < task.step_lim:
-            return False, f"smoke_step_limit_reached:{max_steps}"
-        return False, None
+            return False, f"smoke_step_limit_reached:{max_steps}", episode_instruction
+        return False, None, episode_instruction
     except Exception as error:
-        return False, f"{type(error).__name__}: {error}"
+        return False, f"{type(error).__name__}: {error}", episode_instruction
     finally:
         if video_started:
             task._del_eval_video_ffmpeg()
@@ -377,6 +402,10 @@ def main() -> None:
         raise ValueError("--video-width and --video-height must be non-negative")
     if cli.max_steps is not None and cli.max_steps <= 0:
         raise ValueError("--max-steps must be positive")
+    if cli.hammer_arm_aware_instruction and cli.task_name != "beat_block_hammer":
+        raise ValueError(
+            "--hammer-arm-aware-instruction requires --task-name beat_block_hammer"
+        )
     if (
         cli.bottle_lift_success_height_m is not None
         and cli.bottle_lift_success_height_m <= 0
@@ -409,7 +438,9 @@ def main() -> None:
     base_args["max_gripper_step_m"] = cli.max_gripper_step_m
     base_args["max_executor_step_rad"] = cli.max_executor_step_rad
     base_args["max_executor_gripper_step_m"] = cli.max_executor_gripper_step_m
-    base_args["trace_enabled"] = False
+    base_args["trace_enabled"] = cli.trace_dir is not None
+    if cli.trace_dir is not None:
+        base_args["trace_dir"] = str(cli.trace_dir.expanduser().resolve())
     base_args["policy_inference_seed"] = cli.policy_inference_seed
     base_args["eval_video_stride"] = cli.video_stride
     if cli.bottle_lift_success_height_m is not None:
@@ -463,6 +494,9 @@ def main() -> None:
         "policy_path": str(policy_path),
         "server_address": cli.server_address,
         "instruction": cli.instruction,
+        "instruction_by_arm": (
+            HAMMER_ARM_INSTRUCTIONS if cli.hammer_arm_aware_instruction else None
+        ),
         "episodes_per_view": cli.episodes_per_view,
         "max_steps": cli.max_steps,
         "shared_valid_seeds": valid_seeds,
@@ -495,6 +529,11 @@ def main() -> None:
             "video_crf": cli.video_crf,
             "video_preset": cli.video_preset,
         },
+        "trace_dir": (
+            str(cli.trace_dir.expanduser().resolve())
+            if cli.trace_dir is not None
+            else None
+        ),
     }
     payload = load_or_create_results(
         output_dir,
@@ -571,7 +610,7 @@ def main() -> None:
                 video_path = unused_video_path(
                     output_dir / f"{spec.identifier}_seed_{scenario_seed}.mp4"
                 )
-            success, error = run_episode(
+            success, error, episode_instruction = run_episode(
                 task,
                 view_args,
                 model,
@@ -585,11 +624,13 @@ def main() -> None:
                 video_crf=cli.video_crf,
                 video_preset=cli.video_preset,
                 max_steps=cli.max_steps,
+                hammer_arm_aware_instruction=cli.hammer_arm_aware_instruction,
             )
             successes += int(success)
             view_result["episode_results"].append(
                 {
                     "seed": scenario_seed,
+                    "instruction": episode_instruction,
                     "success": success,
                     "error": error,
                     "video": str(video_path) if video_path is not None else None,

@@ -79,6 +79,19 @@ python script/update_embodiment_config_path.py
 ./run_new_tasks_adapter_data.sh click_bell 10 8
 ```
 
+旧版 Hammer LeRobot v3 数据可能把多种同义提示词保存成四个 task label。需要与当前
+左右臂各一个固定提示词的训练/评估契约对齐时，创建一个不修改源数据的新数据集：
+
+```bash
+python tools/normalize_hammer_task_labels.py \
+  --input-dir /path/to/hammer_lerobot_v3 \
+  --output-dir /path/to/hammer_lerobot_v3_canonical_lr
+```
+
+输出数据将四个旧标签归并为两个固定标签，重写 frame、episode 和全局统计元数据；大型
+视频文件使用硬链接，因此输入和输出应放在同一文件系统。新采集数据如果已经只有这两个
+标签，则不需要执行该工具。
+
 ## PI0.5 推理
 
 PI0.5 client 在 RoboTwin 环境中运行，server 使用本仓库随附的 LeRobot NERO runtime。
@@ -149,6 +162,12 @@ export ROBOTWIN_PI05_POLICY_PATH="$PWD/outputs/pi05_feature_adapter/image_routed
 切换到另一种 Adapter 时先停止当前 server，修改 `ROBOTWIN_PI05_POLICY_PATH` 后重新启动。
 `ROBOTWIN_PI05_FEATURE_ADAPTER=on|off|auto` 只控制当前 checkpoint 中的 Adapter 是否启用，
 不会改变 Adapter 结构。`auto` 是默认值；相机评估还可以让 C0 绕过 Adapter，以对照原始模型。
+
+三任务相机评估会根据 Hammer block 位于桌面中心的左侧或右侧，为每个 episode 选择与任务
+实际用臂一致的固定提示词。单独调用相机评估脚本时使用
+`--hammer-arm-aware-instruction` 开启相同行为。排查推理动作时可用
+`--trace-dir outputs/pi05_inference_traces` 保存每次重规划的模型输出和仿真目标；提示词和 trace
+路径都属于断点恢复契约，改变后不能混入已有 `--resume-existing` 结果。
 
 ## 快速检查
 

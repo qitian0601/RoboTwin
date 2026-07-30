@@ -24,6 +24,7 @@ class TaskSpec:
     name: str
     config: str
     instruction: str
+    hammer_arm_aware_instruction: bool = False
 
 
 TASK_SPECS = (
@@ -40,7 +41,8 @@ TASK_SPECS = (
     TaskSpec(
         "beat_block_hammer",
         "demo_nero_beat_block_hammer_c0",
-        "Pick up the hammer with the right arm and strike the block.",
+        "Take the hammer in the right gripper and strike the block.",
+        hammer_arm_aware_instruction=True,
     ),
 )
 
@@ -212,6 +214,13 @@ def main() -> None:
             else None
         ),
         "tasks": [spec.name for spec in selected_specs],
+        "task_instructions": {
+            spec.name: {
+                "default": spec.instruction,
+                "hammer_arm_aware": spec.hammer_arm_aware_instruction,
+            }
+            for spec in selected_specs
+        },
     }
     manifest_path = run_dir / "run_manifest.json"
     if run_dir.exists():
@@ -280,6 +289,8 @@ def main() -> None:
         ]
         if cli.resume_existing:
             command.append("--resume-existing")
+        if task_spec.hammer_arm_aware_instruction:
+            command.append("--hammer-arm-aware-instruction")
         if cli.policy_inference_seed is not None:
             command.extend(
                 ["--policy-inference-seed", str(cli.policy_inference_seed)]
@@ -313,6 +324,7 @@ def main() -> None:
             "task_name": task_spec.name,
             "task_config": task_spec.config,
             "instruction": task_spec.instruction,
+            "hammer_arm_aware_instruction": task_spec.hammer_arm_aware_instruction,
             "output_dir": str(task_dir),
             "returncode": completed.returncode,
             "attempted_at": datetime.now().astimezone().isoformat(),
