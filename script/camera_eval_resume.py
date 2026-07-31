@@ -36,6 +36,21 @@ _RESUME_VERSIONED_FIELDS = (
 )
 
 
+def retain_episode_video(
+    video_path: Path | None,
+    *,
+    success: bool,
+    failures_only: bool,
+) -> Path | None:
+    """Keep failures, deleting only the current successful episode video."""
+    if video_path is None:
+        return None
+    if failures_only and success:
+        video_path.unlink(missing_ok=True)
+        return None
+    return video_path
+
+
 def write_results(output_dir: Path, payload: dict[str, Any]) -> None:
     """Atomically checkpoint JSON and its human-readable CSV projection."""
     output_dir.mkdir(parents=True, exist_ok=True)

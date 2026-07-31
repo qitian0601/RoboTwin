@@ -84,7 +84,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--view", choices=[f"C{index}" for index in range(7)])
     parser.add_argument("--adapter-on-c0", action="store_true")
+    parser.add_argument(
+        "--hammer-eval-profile",
+        choices=("default", "training_support_contact"),
+        default="default",
+        help=(
+            "Hammer-only evaluation contract. training_support_contact uses the "
+            "slow120 config, observed training support, physical-contact success, "
+            "and the previously validated execute-40/new-weight-1 control settings."
+        ),
+    )
     parser.add_argument("--record-video", action="store_true")
+    parser.add_argument(
+        "--record-failures-only",
+        action="store_true",
+        help="Keep only failed episode videos. Requires --record-video.",
+    )
     parser.add_argument("--video-stride", type=int, default=3)
     parser.add_argument("--video-width", type=int, default=640)
     parser.add_argument("--video-height", type=int, default=400)
@@ -188,6 +203,8 @@ def main() -> None:
         raise FileNotFoundError(f"PI0.5 checkpoint directory does not exist: {policy_path}")
     if cli.episodes_per_view <= 0:
         raise ValueError("--episodes-per-view must be positive")
+    if cli.record_failures_only and not cli.record_video:
+        raise ValueError("--record-failures-only requires --record-video")
     if cli.max_steps is not None and cli.max_steps <= 0:
         raise ValueError("--max-steps must be positive")
 
@@ -206,7 +223,9 @@ def main() -> None:
         "policy_inference_seed": cli.policy_inference_seed,
         "view": cli.view,
         "adapter_on_c0": cli.adapter_on_c0,
+        "hammer_eval_profile": cli.hammer_eval_profile,
         "record_video": cli.record_video,
+        "record_failures_only": cli.record_failures_only,
         "max_steps": cli.max_steps,
         "scenario_seeds_from_run": (
             str(cli.scenario_seeds_from_run.expanduser().resolve())
@@ -257,6 +276,23 @@ def main() -> None:
     task_results: list[dict] = []
     for task_spec in selected_specs:
         task_dir = run_dir / task_spec.name
+        task_config = task_spec.config
+        hammer_profile_args: list[str] = []
+        if (
+            task_spec.name == "beat_block_hammer"
+            and cli.hammer_eval_profile == "training_support_contact"
+        ):
+            task_config = "demo_nero_beat_block_hammer_slow120"
+            hammer_profile_args = [
+                "--hammer-contact-success",
+                "--hammer-training-support-range",
+                "--actions-per-chunk",
+                "50",
+                "--chunk-size-threshold",
+                "0.2",
+                "--action-merge-new-weight",
+                "1.0",
+            ]
         command = [
             sys.executable,
             str(SINGLE_TASK_EVALUATOR),
@@ -267,7 +303,7 @@ def main() -> None:
             "--task-name",
             task_spec.name,
             "--task-config",
-            task_spec.config,
+            task_config,
             "--instruction",
             task_spec.instruction,
             "--episodes-per-view",
@@ -286,6 +322,7 @@ def main() -> None:
             str(cli.video_crf),
             "--video-preset",
             cli.video_preset,
+            *hammer_profile_args,
         ]
         if cli.resume_existing:
             command.append("--resume-existing")
@@ -315,6 +352,8 @@ def main() -> None:
             command.append("--adapter-on-c0")
         if cli.record_video:
             command.append("--record-video")
+        if cli.record_failures_only:
+            command.append("--record-failures-only")
         if cli.max_steps is not None:
             command.extend(["--max-steps", str(cli.max_steps)])
 
@@ -322,7 +361,12 @@ def main() -> None:
         completed = subprocess.run(command, cwd=ROOT, check=False)
         task_record = {
             "task_name": task_spec.name,
-            "task_config": task_spec.config,
+            "task_config": task_config,
+            "hammer_eval_profile": (
+                cli.hammer_eval_profile
+                if task_spec.name == "beat_block_hammer"
+                else None
+            ),
             "instruction": task_spec.instruction,
             "hammer_arm_aware_instruction": task_spec.hammer_arm_aware_instruction,
             "output_dir": str(task_dir),

@@ -29,6 +29,7 @@ from envs.utils.create_actor import UnStableError
 from script.camera_eval_resume import (
     existing_view,
     load_or_create_results,
+    retain_episode_video,
     unused_video_path,
     write_results,
 )
@@ -173,6 +174,14 @@ def parse_args() -> argparse.Namespace:
         help="Apply a loaded Feature Adapter to C0 instead of its default canonical bypass.",
     )
     parser.add_argument("--record-video", action="store_true")
+    parser.add_argument(
+        "--record-failures-only",
+        action="store_true",
+        help=(
+            "Record every episode temporarily, then delete the current episode's "
+            "video after a confirmed success. Requires --record-video."
+        ),
+    )
     parser.add_argument(
         "--video-stride",
         type=int,
@@ -320,7 +329,15 @@ def collect_valid_seeds(
         if len(valid_seeds) == episodes:
             break
         try:
-            task.setup_demo(now_ep_num=attempt_index, seed=candidate_seed, is_test=True, **base_args)
+            # Verify the exact episode index that this seed will use during
+            # evaluation. This matters for tasks whose arm/scene depends on
+            # episode parity, such as balanced Hammer collection.
+            task.setup_demo(
+                now_ep_num=len(valid_seeds),
+                seed=candidate_seed,
+                is_test=True,
+                **base_args,
+            )
             task.play_once()
             if task.plan_success and task.check_success():
                 valid_seeds.append(candidate_seed)
@@ -434,6 +451,8 @@ def main() -> None:
         raise ValueError("--video-stride must be positive")
     if cli.video_width < 0 or cli.video_height < 0:
         raise ValueError("--video-width and --video-height must be non-negative")
+    if cli.record_failures_only and not cli.record_video:
+        raise ValueError("--record-failures-only requires --record-video")
     if cli.max_steps is not None and cli.max_steps <= 0:
         raise ValueError("--max-steps must be positive")
     if cli.scenario_episode_index is not None and cli.scenario_episode_index < 0:
@@ -595,6 +614,7 @@ def main() -> None:
         },
         "recording_config": {
             "enabled": cli.record_video,
+            "failures_only": cli.record_failures_only,
             "video_stride": cli.video_stride,
             "video_width": cli.video_width,
             "video_height": cli.video_height,
@@ -703,6 +723,11 @@ def main() -> None:
                 max_steps=cli.max_steps,
                 hammer_arm_aware_instruction=cli.hammer_arm_aware_instruction,
             )
+            retained_video = retain_episode_video(
+                video_path,
+                success=success,
+                failures_only=cli.record_failures_only,
+            )
             successes += int(success)
             view_result["episode_results"].append(
                 {
@@ -711,7 +736,7 @@ def main() -> None:
                     "instruction": episode_instruction,
                     "success": success,
                     "error": error,
-                    "video": str(video_path) if video_path is not None else None,
+                    "video": str(retained_video) if retained_video is not None else None,
                 }
             )
             view_result["successes"] = successes

@@ -135,7 +135,11 @@ def build_manifest(
         if source_instruction_path.exists():
             source_instruction = load_json(source_instruction_path)
             available_instructions = source_instruction.get("seen", []) + source_instruction.get("unseen", [])
-            if instruction not in {str(value).strip() for value in available_instructions}:
+            normalized_instructions = [str(value).strip() for value in available_instructions]
+            generic_fallback = task_name.replace("_", " ")
+            if instruction == generic_fallback and normalized_instructions:
+                instruction = normalized_instructions[0]
+            elif instruction not in set(normalized_instructions):
                 raise ValueError(
                     f"Template/source instruction mismatch for episode {episode_id}: {instruction!r}"
                 )

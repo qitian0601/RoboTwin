@@ -1,7 +1,9 @@
 """Tests for the multi-task evaluation contract."""
 
+import sys
+
 from script.hammer_task_prompts import hammer_instruction_for_block_x
-from script.evaluate_pi05_three_tasks_camera_views import TASK_SPECS
+from script.evaluate_pi05_three_tasks_camera_views import TASK_SPECS, parse_args
 
 
 def test_multi_task_prompts_match_training_manifest():
@@ -25,3 +27,8 @@ def test_hammer_prompt_matches_the_task_selected_arm():
     assert hammer_instruction_for_block_x(0.2, 0.0) == (
         "Take the hammer in the right gripper and strike the block."
     )
+
+
+def test_hammer_eval_profile_defaults_to_legacy_contract(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["evaluate", "--policy-path", "/tmp/policy"])
+    assert parse_args().hammer_eval_profile == "default"
